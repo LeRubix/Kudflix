@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Palette, Image as ImageIcon, Save, Type, Maximize, Settings as SettingsIcon, MonitorPlay, ShieldAlert, Check, User, Upload, Edit2 } from 'lucide-react';
+import { X, Palette, Image as ImageIcon, Save, Type, Maximize, Settings as SettingsIcon, MonitorPlay, ShieldAlert, Check, User, Upload, Edit2, FolderOpen, Trash2 } from 'lucide-react';
 import type { Profile } from './ProfilesScreen';
 
 export interface Settings {
@@ -10,20 +10,31 @@ export interface Settings {
   uiScale: number;
   useExternalPlayer: boolean;
   externalPlayerPath: string;
+  movieFolders: string[];
+  tvFolders: string[];
+  skipProfilePicker: boolean;
+  defaultProfileId: string | null;
 }
 
 const RECENT_COLORS = ['#003e8f', '#bc13fe', '#cf3f4c', '#555555', '#7b4cff'];
 
 const AVATAR_OPTIONS = Array.from({ length: 9 }, (_, i) => `./avatars/key${i + 1}.jpg`);
 
-export function SettingsModal({ onClose, onSave, currentSettings, activeProfileId: _activeProfileId }: { 
+export function SettingsModal({ onClose, onSave, currentSettings, activeProfileId: _activeProfileId, initialTab = 'general' }: { 
   onClose: () => void, 
   onSave: (settings: Settings) => void,
   currentSettings: Settings,
-  activeProfileId?: string | null
+  activeProfileId?: string | null,
+  initialTab?: 'general' | 'library' | 'personalization' | 'profiles' | 'advanced'
 }) {
-  const [settings, setSettings] = useState<Settings>(currentSettings);
-  const [activeTab, setActiveTab] = useState<'general' | 'personalization' | 'profiles' | 'advanced'>('general');
+  const [settings, setSettings] = useState<Settings>({
+    ...currentSettings,
+    movieFolders: currentSettings.movieFolders ?? [],
+    tvFolders: currentSettings.tvFolders ?? [],
+    skipProfilePicker: currentSettings.skipProfilePicker ?? false,
+    defaultProfileId: currentSettings.defaultProfileId ?? null,
+  });
+  const [activeTab, setActiveTab] = useState<'general' | 'library' | 'personalization' | 'profiles' | 'advanced'>(initialTab);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
   const [showAvatarGrid, setShowAvatarGrid] = useState(false);
@@ -47,6 +58,36 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
     }
   };
 
+  const addFolders = async (type: 'movie' | 'tv') => {
+    if (!window.electronAPI?.selectFolders) return;
+    const selected = await window.electronAPI.selectFolders();
+    if (!selected.length) return;
+    const key = type === 'movie' ? 'movieFolders' : 'tvFolders';
+    const existing = settings[key];
+    const merged = [...existing];
+    for (const folder of selected) {
+      if (!merged.includes(folder)) merged.push(folder);
+    }
+    setSettings({ ...settings, [key]: merged });
+  };
+
+  const removeFolder = (type: 'movie' | 'tv', folder: string) => {
+    const key = type === 'movie' ? 'movieFolders' : 'tvFolders';
+    setSettings({ ...settings, [key]: settings[key].filter(f => f !== folder) });
+  };
+
+  const handleCustomAvatarUpload = async () => {
+    if (!editingProfile || !window.electronAPI?.cacheProfileImage) return;
+    const cachedPath = await window.electronAPI.cacheProfileImage();
+    if (!cachedPath) return;
+    const updated = { ...editingProfile, avatar: cachedPath };
+    setEditingProfile(updated);
+    const newProfiles = profiles.map(p => p.id === updated.id ? updated : p);
+    setProfiles(newProfiles);
+    localStorage.setItem('netflix_profiles', JSON.stringify(newProfiles));
+    setShowAvatarGrid(false);
+  };
+
   return (
     <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
       <div className="bg-[#181818] w-full max-w-2xl rounded-xl shadow-2xl border border-gray-800 flex overflow-hidden min-h-[500px]">
@@ -59,6 +100,12 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
             className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition ${activeTab === 'general' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'}`}
           >
             <SettingsIcon className="w-5 h-5" /> General
+          </button>
+          <button 
+            onClick={() => setActiveTab('library')}
+            className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition ${activeTab === 'library' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'}`}
+          >
+            <FolderOpen className="w-5 h-5" /> Library
           </button>
           <button 
             onClick={() => setActiveTab('personalization')}
@@ -118,6 +165,61 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                   onChange={(e) => setSettings({ ...settings, uiScale: parseFloat(e.target.value) })}
                   className="w-full accent-accent"
                 />
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'library' && (
+            <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-300">
+              <h3 className="text-xl font-bold text-white mb-6">Library Folders</h3>
+              <p className="text-sm text-gray-400 -mt-4 mb-6">
+                Add one or more folders for movies and TV shows. Each section scans its own folders independently.
+              </p>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-300 mb-3">Movie Folders</label>
+                <div className="space-y-2 mb-3">
+                  {settings.movieFolders.length === 0 ? (
+                    <p className="text-xs text-gray-500 italic">No movie folders selected.</p>
+                  ) : settings.movieFolders.map(folder => (
+                    <div key={folder} className="flex items-center gap-2 bg-black/50 border border-gray-700 rounded-lg px-3 py-2">
+                      <FolderOpen className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                      <span className="text-sm text-gray-300 truncate flex-grow" title={folder}>{folder}</span>
+                      <button onClick={() => removeFolder('movie', folder)} className="text-gray-500 hover:text-red-400 transition flex-shrink-0">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  onClick={() => addFolders('movie')}
+                  className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white text-sm font-semibold transition"
+                >
+                  <FolderOpen className="w-4 h-4" /> Add Movie Folder(s)
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-300 mb-3">TV Show Folders</label>
+                <div className="space-y-2 mb-3">
+                  {settings.tvFolders.length === 0 ? (
+                    <p className="text-xs text-gray-500 italic">No TV show folders selected.</p>
+                  ) : settings.tvFolders.map(folder => (
+                    <div key={folder} className="flex items-center gap-2 bg-black/50 border border-gray-700 rounded-lg px-3 py-2">
+                      <FolderOpen className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                      <span className="text-sm text-gray-300 truncate flex-grow" title={folder}>{folder}</span>
+                      <button onClick={() => removeFolder('tv', folder)} className="text-gray-500 hover:text-red-400 transition flex-shrink-0">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  onClick={() => addFolders('tv')}
+                  className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white text-sm font-semibold transition"
+                >
+                  <FolderOpen className="w-4 h-4" /> Add TV Folder(s)
+                </button>
               </div>
             </div>
           )}
@@ -203,7 +305,41 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
 
           {activeTab === 'profiles' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
-              <h3 className="text-xl font-bold text-white mb-6">Profiles</h3>
+              <h3 className="text-xl font-bold text-white mb-2">Profiles</h3>
+
+              {!editingProfile && (
+                <div
+                  className="flex items-center gap-3 mb-4 bg-gray-800/30 p-4 rounded-lg border border-gray-800 cursor-pointer hover:bg-gray-800/50 transition"
+                  onClick={() => {
+                    const next = !settings.skipProfilePicker;
+                    let defaultProfileId = settings.defaultProfileId;
+                    if (next && !defaultProfileId && profiles.length > 0) {
+                      defaultProfileId = profiles[0].id;
+                    }
+                    setSettings({ ...settings, skipProfilePicker: next, defaultProfileId });
+                  }}
+                >
+                  <User className="w-5 h-5 text-accent flex-shrink-0" />
+                  <div className="flex-grow min-w-0">
+                    <span className="text-sm font-bold text-white block">Skip profile selection on startup</span>
+                    <span className="text-xs text-gray-400">Sign in with your default profile automatically</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.skipProfilePicker}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      let defaultProfileId = settings.defaultProfileId;
+                      if (next && !defaultProfileId && profiles.length > 0) {
+                        defaultProfileId = profiles[0].id;
+                      }
+                      setSettings({ ...settings, skipProfilePicker: next, defaultProfileId });
+                    }}
+                    className="w-5 h-5 accent-accent flex-shrink-0"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
+              )}
               
               {editingProfile && showAvatarGrid ? (
                 // Avatar grid picker
@@ -227,28 +363,12 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                       </button>
                     ))}
                   </div>
-                  <div className='relative inline-block'>
-                    <button className='flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white text-sm font-semibold transition'>
-                      <Upload className='w-4 h-4' /> Upload Custom
-                    </button>
-                    <input 
-                      type="file" accept="image/*"
-                      onChange={(e) => {
-                        if (e.target.files && e.target.files[0]) {
-                          const file = e.target.files[0] as any;
-                          if (file.path) {
-                            const updated = { ...editingProfile, avatar: `file:///${file.path.replace(/\\/g, '/')}` };
-                            setEditingProfile(updated);
-                            const newProfiles = profiles.map(p => p.id === updated.id ? updated : p);
-                            setProfiles(newProfiles);
-                            localStorage.setItem('netflix_profiles', JSON.stringify(newProfiles));
-                            setShowAvatarGrid(false);
-                          }
-                        }
-                      }}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    />
-                  </div>
+                  <button
+                    onClick={handleCustomAvatarUpload}
+                    className='inline-flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white text-sm font-semibold transition'
+                  >
+                    <Upload className='w-4 h-4' /> Upload Custom
+                  </button>
                   <button onClick={() => setShowAvatarGrid(false)} className="ml-2 text-sm text-gray-400 hover:text-white transition">Cancel</button>
                 </div>
               ) : editingProfile ? (
@@ -292,6 +412,13 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                         const newProfiles = profiles.filter(p => p.id !== editingProfile.id);
                         setProfiles(newProfiles);
                         localStorage.setItem('netflix_profiles', JSON.stringify(newProfiles));
+                        if (settings.defaultProfileId === editingProfile.id) {
+                          setSettings({
+                            ...settings,
+                            defaultProfileId: newProfiles[0]?.id ?? null,
+                            skipProfilePicker: newProfiles.length > 0 && settings.skipProfilePicker,
+                          });
+                        }
                         setEditingProfile(null);
                       }} className="ml-auto text-red-500 text-sm hover:text-white hover:bg-red-500 transition px-4 py-1.5 border border-red-500 rounded font-bold">
                         Delete
@@ -302,13 +429,24 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
               ) : (
                 // Profile list
                 <div className="space-y-3">
+                  {settings.skipProfilePicker && (
+                    <p className="text-xs text-gray-500 mb-1">Default profile:</p>
+                  )}
                   {profiles.map(p => (
-                    <div key={p.id} className="flex items-center gap-4 bg-gray-800/30 p-3 rounded-lg border border-gray-800 hover:bg-gray-800/50 transition group">
+                    <div key={p.id} className={`flex items-center gap-4 p-3 rounded-lg border transition group ${settings.defaultProfileId === p.id && settings.skipProfilePicker ? 'bg-gray-800/60 border-accent/40' : 'bg-gray-800/30 border-gray-800 hover:bg-gray-800/50'}`}>
                       <div className="w-12 h-12 rounded overflow-hidden flex-shrink-0 border-2 border-transparent group-hover:border-gray-600 transition" style={{ backgroundColor: p.color }}>
-                        <img src={p.avatar} className="w-full h-full object-cover" />
+                        <img src={p.avatar} className="w-full h-full object-cover" alt="" />
                       </div>
-                      <span className="text-white font-semibold flex-grow">{p.name}</span>
-                      <button onClick={() => setEditingProfile(p)} className="text-gray-400 hover:text-white text-sm font-semibold transition bg-gray-700/50 px-3 py-1 rounded">Edit</button>
+                      <span className="text-white font-semibold flex-grow truncate">{p.name}</span>
+                      {settings.skipProfilePicker && (
+                        <button
+                          onClick={() => setSettings({ ...settings, defaultProfileId: p.id })}
+                          className={`text-xs font-bold px-3 py-1 rounded transition flex-shrink-0 ${settings.defaultProfileId === p.id ? 'bg-accent text-white' : 'bg-gray-700/50 text-gray-400 hover:text-white'}`}
+                        >
+                          {settings.defaultProfileId === p.id ? 'Default' : 'Set default'}
+                        </button>
+                      )}
+                      <button onClick={() => setEditingProfile(p)} className="text-gray-400 hover:text-white text-sm font-semibold transition bg-gray-700/50 px-3 py-1 rounded flex-shrink-0">Edit</button>
                     </div>
                   ))}
                   

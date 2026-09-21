@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Upload } from 'lucide-react';
+import { Plus, Edit2, Upload, User } from 'lucide-react';
 import { generateLocalAvatar } from '../utils/avatar';
 
 export interface Profile {
@@ -17,7 +17,17 @@ export const DEFAULT_PROFILES: Profile[] = [
   { id: '2', name: 'Guest', color: '#0071eb', avatar: AVATAR_OPTIONS[1] }
 ];
 
-export function ProfilesScreen({ onSelect }: { onSelect: (id: string) => void }) {
+export function ProfilesScreen({
+  onSelect,
+  skipProfilePicker = false,
+  defaultProfileId = null,
+  onProfileSettingsChange,
+}: {
+  onSelect: (id: string) => void;
+  skipProfilePicker?: boolean;
+  defaultProfileId?: string | null;
+  onProfileSettingsChange?: (update: { skipProfilePicker?: boolean; defaultProfileId?: string | null }) => void;
+}) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [editingMode, setEditingMode] = useState(false);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
@@ -35,7 +45,7 @@ export function ProfilesScreen({ onSelect }: { onSelect: (id: string) => void })
           needsSave = true;
           return { ...p, name: 'Kud', color: '#fdbce6', avatar: AVATAR_OPTIONS[7] };
         }
-        if (p.avatar.includes('api.dicebear.com') || p.avatar.startsWith('data:image/svg') || p.avatar.includes('./avatars/avatar') || p.avatar.includes('.png')) {
+        if (p.avatar.includes('api.dicebear.com') || p.avatar.startsWith('data:image/svg') || p.avatar.includes('./avatars/avatar')) {
           needsSave = true;
           return { ...p, avatar: generateLocalAvatar(p.name) };
         }
@@ -70,7 +80,17 @@ export function ProfilesScreen({ onSelect }: { onSelect: (id: string) => void })
     const updated = profiles.filter(x => x.id !== id);
     setProfiles(updated);
     localStorage.setItem('netflix_profiles', JSON.stringify(updated));
+    if (defaultProfileId === id && onProfileSettingsChange) {
+      onProfileSettingsChange({
+        defaultProfileId: updated[0]?.id ?? null,
+        skipProfilePicker: updated.length > 0 && skipProfilePicker,
+      });
+    }
     setEditingProfile(null);
+  };
+
+  const updateProfileSettings = (update: { skipProfilePicker?: boolean; defaultProfileId?: string | null }) => {
+    onProfileSettingsChange?.(update);
   };
 
   // Avatar Picker Overlay
@@ -96,24 +116,20 @@ export function ProfilesScreen({ onSelect }: { onSelect: (id: string) => void })
         </div>
 
         {/* Custom Upload */}
-        <div className='relative mb-8'>
-          <button className='flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-5 py-2.5 rounded-lg text-white text-sm font-semibold transition'>
-            <Upload className='w-4 h-4' /> Upload Custom Image
-          </button>
-          <input 
-            type="file" 
-            accept="image/*"
-            onChange={(e) => {
-              if (e.target.files && e.target.files[0]) {
-                const file = e.target.files[0] as any;
-                if (file.path) {
-                  setEditingProfile({ ...editingProfile, avatar: `file:///${file.path.replace(/\\/g, '/')}` });
-                  setShowAvatarPicker(false);
-                }
+        <div className='mb-8'>
+          <button
+            onClick={async () => {
+              if (!window.electronAPI?.cacheProfileImage) return;
+              const cachedPath = await window.electronAPI.cacheProfileImage();
+              if (cachedPath) {
+                setEditingProfile({ ...editingProfile, avatar: cachedPath });
+                setShowAvatarPicker(false);
               }
             }}
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-          />
+            className='flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-5 py-2.5 rounded-lg text-white text-sm font-semibold transition'
+          >
+            <Upload className='w-4 h-4' /> Upload Custom Image
+          </button>
         </div>
 
         <button 
@@ -195,6 +211,36 @@ export function ProfilesScreen({ onSelect }: { onSelect: (id: string) => void })
         {editingMode ? 'Manage Profiles' : "Who's watching?"}
       </h1>
       
+      {editingMode && onProfileSettingsChange && (
+        <div
+          className="flex items-center gap-3 mb-8 max-w-md w-full mx-4 bg-gray-800/40 p-4 rounded-lg border border-gray-700 cursor-pointer hover:bg-gray-800/60 transition"
+          onClick={() => {
+            const next = !skipProfilePicker;
+            let nextDefault = defaultProfileId;
+            if (next && !nextDefault && profiles.length > 0) nextDefault = profiles[0].id;
+            updateProfileSettings({ skipProfilePicker: next, defaultProfileId: nextDefault });
+          }}
+        >
+          <User className="w-5 h-5 text-accent flex-shrink-0" />
+          <div className="flex-grow min-w-0">
+            <span className="text-sm font-bold text-white block">Skip profile selection on startup</span>
+            <span className="text-xs text-gray-400">Tap a profile below to set the default</span>
+          </div>
+          <input
+            type="checkbox"
+            checked={skipProfilePicker}
+            onChange={(e) => {
+              const next = e.target.checked;
+              let nextDefault = defaultProfileId;
+              if (next && !nextDefault && profiles.length > 0) nextDefault = profiles[0].id;
+              updateProfileSettings({ skipProfilePicker: next, defaultProfileId: nextDefault });
+            }}
+            className="w-5 h-5 accent-[#fdbce6] flex-shrink-0"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+
       <div className='flex gap-8 flex-wrap justify-center items-start'>
         {profiles.map((p, i) => (
           <div 
@@ -207,7 +253,13 @@ export function ProfilesScreen({ onSelect }: { onSelect: (id: string) => void })
             }}
           >
             <div 
-              className={`w-32 h-32 md:w-40 md:h-40 rounded bg-gray-800 border-4 ${editingMode ? 'border-transparent opacity-50' : 'border-transparent group-hover:border-white group-hover:scale-105'} transition-all duration-300 overflow-hidden relative`}
+              className={`w-32 h-32 md:w-40 md:h-40 rounded bg-gray-800 border-4 transition-all duration-300 overflow-hidden relative ${
+                editingMode
+                  ? defaultProfileId === p.id && skipProfilePicker
+                    ? 'border-accent opacity-100 scale-105'
+                    : 'border-transparent opacity-50'
+                  : 'border-transparent group-hover:border-white group-hover:scale-105'
+              }`}
               style={{ backgroundColor: p.color }}
             >
               <img src={p.avatar} alt={p.name} className='w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity' />
@@ -218,6 +270,17 @@ export function ProfilesScreen({ onSelect }: { onSelect: (id: string) => void })
               )}
             </div>
             <span className={`mt-4 text-gray-400 ${!editingMode && 'group-hover:text-white'} transition font-semibold`}>{p.name}</span>
+            {editingMode && skipProfilePicker && onProfileSettingsChange && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  updateProfileSettings({ defaultProfileId: p.id, skipProfilePicker: true });
+                }}
+                className={`mt-2 text-xs font-bold px-3 py-1 rounded transition ${defaultProfileId === p.id ? 'bg-accent text-white' : 'bg-gray-700 text-gray-300 hover:text-white'}`}
+              >
+                {defaultProfileId === p.id ? 'Default' : 'Set default'}
+              </button>
+            )}
           </div>
         ))}
 

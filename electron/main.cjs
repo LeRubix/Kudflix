@@ -65,6 +65,36 @@ ipcMain.handle('select-folder', async () => {
   return result.filePaths[0];
 });
 
+// IPC Handler to select multiple folders
+ipcMain.handle('select-folders', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'multiSelections']
+  });
+  if (result.canceled) return [];
+  return result.filePaths;
+});
+
+// IPC Handler to pick and cache a profile image in userData (survives source file moves)
+ipcMain.handle('cache-profile-image', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'] }]
+  });
+  if (result.canceled) return null;
+
+  const sourcePath = result.filePaths[0];
+  const avatarsDir = path.join(app.getPath('userData'), 'avatars');
+  if (!fs.existsSync(avatarsDir)) {
+    fs.mkdirSync(avatarsDir, { recursive: true });
+  }
+
+  const ext = path.extname(sourcePath).toLowerCase() || '.jpg';
+  const destPath = path.join(avatarsDir, `${Date.now()}${ext}`);
+  fs.copyFileSync(sourcePath, destPath);
+
+  return `file:///${destPath.replace(/\\/g, '/')}`;
+});
+
 // IPC Handler to scan directory
 ipcMain.handle('scan-directory', async (event, dirPath) => {
   try {
@@ -156,9 +186,47 @@ ipcMain.handle('play-in-external-player', async (event, playerPath, videoPath) =
     args.push('/fullscreen', '/close');
   }
 
-  execFile(playerPath, args, (error) => {
-    if (error) {
-      console.error('Failed to launch external player:', error);
-    }
+  return new Promise((resolve, reject) => {
+    execFile(playerPath, args, (error) => {
+      if (error) {
+        console.error('Failed to launch external player:', error);
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
   });
+});
+
+// Probe audio codec via ffprobe (if installed) Chromium can't play AC3/DTS/etc.
+ipcMain.handle('probe-media', async (event, videoPath) => {
+  const { execFile } = require('child_process');
+
+  const runProbe = (cmd) => new Promise((resolve) => {
+    execFile(cmd, [
+      '-v', 'error',
+      '-select_streams', 'a:0',
+      '-show_entries', 'stream=codec_name',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      videoPath
+    ], { timeout: 8000, windowsHide: true }, (err, stdout) => {
+      if (err) return resolve(null);
+      const codec = (stdout || '').trim().toLowerCase();
+      resolve(codec || null);
+    });
+  });
+
+  const candidates = ['ffprobe'];
+  if (process.platform === 'win32') {
+    candidates.push('C:\\ffmpeg\\bin\\ffprobe.exe');
+  }
+
+  for (const cmd of candidates) {
+    const codec = await runProbe(cmd);
+    if (codec) {
+      return { audioCodec: codec, hasAudio: true };
+    }
+  }
+
+  return { audioCodec: null, hasAudio: null };
 });

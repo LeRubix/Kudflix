@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { Play, Plus, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Play, Plus, ChevronLeft, ChevronRight, X, Edit2, Save } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getTMDBMetadata, type TMDBResult } from '../utils/tmdb';
+import type { MediaOverride } from '../utils/mediaOverrides';
+import { useImageBrightness } from '../hooks/useImageBrightness';
 import { EpisodeRow } from './EpisodeRow';
 
 // --- Types ---
@@ -9,7 +12,8 @@ export interface LocalFile {
   name: string;
   path: string;
   relativePath?: string;
-  meta?: { title?: string; description?: string; poster?: string; year?: string; genre?: string; };
+  category?: 'movie' | 'tv';
+  meta?: { title?: string; description?: string; poster?: string | null; year?: string; genre?: string; };
   thumbnail?: string;
   duration?: number;
   dateModified?: number;
@@ -21,9 +25,143 @@ export interface LocalFile {
   folderFiles?: LocalFile[];
 }
 
+function getDisplayTitle(video: LocalFile) {
+  return video.meta?.title || video.name;
+}
+
+// --- Thumbnail title with Bebas Neue + adaptive contrast ---
+function ThumbnailTitle({ title, imageSrc, className = '' }: { title: string; imageSrc?: string; className?: string }) {
+  const brightness = useImageBrightness(imageSrc);
+  const isLight = brightness === 'light';
+
+  return (
+    <>
+      <div
+        className={`absolute bottom-0 left-0 right-0 h-14 pointer-events-none ${
+          isLight ? 'bg-gradient-to-t from-white/80 via-white/30 to-transparent' : 'bg-gradient-to-t from-black/80 via-black/30 to-transparent'
+        }`}
+      />
+      <div
+        className={`absolute bottom-2 left-2 right-2 truncate font-bebas tracking-wide text-base leading-tight z-10 ${
+          isLight ? 'text-black' : 'text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]'
+        } ${className}`}
+      >
+        {title}
+      </div>
+    </>
+  );
+}
+
+// --- Grid View Modal ---
+export function GridViewModal({
+  title,
+  videos,
+  onClose,
+  onPlay,
+  onInfo,
+  progresses = {},
+}: {
+  title: string;
+  videos: LocalFile[];
+  onClose: () => void;
+  onPlay: (v: LocalFile) => void;
+  onInfo: (v: LocalFile) => void;
+  progresses?: Record<string, number>;
+}) {
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = 'auto'; };
+  }, []);
+
+  return createPortal(
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[500] bg-[#141414] flex flex-col pt-24"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: 20, opacity: 0 }}
+          className="flex flex-col flex-1 overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-10 pb-6 shrink-0">
+            <h2 className="text-3xl md:text-4xl font-bold text-white">{title}</h2>
+            <button
+              onClick={onClose}
+              className="p-2 bg-[#181818]/80 rounded-full hover:bg-white hover:text-black transition text-white border border-white/20"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-10 pb-10">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+              {videos.map((video, i) => (
+                <VideoCard
+                  key={`${video.path}-${i}`}
+                  video={video}
+                  onPlay={(v) => { onClose(); onPlay(v); }}
+                  onInfo={(v) => { onClose(); onInfo(v); }}
+                  variant="grid"
+                  progress={progresses[video.path] !== undefined && video.duration ? progresses[video.path] / video.duration : 0}
+                />
+              ))}
+            </div>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>,
+    document.body
+  );
+}
+
 // --- Detail Modal ---
-export function DetailModal({ video, onClose, onPlay }: { video: LocalFile, onClose: () => void, onPlay: (v: LocalFile) => void }) {
+export function DetailModal({
+  video,
+  onClose,
+  onPlay,
+  onUpdate,
+}: {
+  video: LocalFile;
+  onClose: () => void;
+  onPlay: (v: LocalFile) => void;
+  onUpdate?: (path: string, override: MediaOverride) => void;
+}) {
   const [tmdb, setTmdb] = useState<TMDBResult | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    title: video.meta?.title || video.name,
+    description: video.meta?.description || '',
+    genre: video.meta?.genre || '',
+    year: video.meta?.year || '',
+  });
+
+  useEffect(() => {
+    setEditForm({
+      title: video.meta?.title || video.name,
+      description: video.meta?.description || '',
+      genre: video.meta?.genre || '',
+      year: video.meta?.year || '',
+    });
+    setIsEditing(false);
+  }, [video.path, video.meta?.title, video.meta?.description, video.meta?.genre, video.meta?.year, video.name]);
+
+  const handleSaveEdits = () => {
+    if (video.isFolder) return;
+    const override: MediaOverride = {
+      title: editForm.title.trim() || undefined,
+      description: editForm.description.trim() || undefined,
+      genre: editForm.genre.trim() || undefined,
+      year: editForm.year.trim() || undefined,
+    };
+    onUpdate?.(video.path, override);
+    setIsEditing(false);
+  };
 
   // Prevent scrolling on body when modal is open
   useEffect(() => {
@@ -86,10 +224,16 @@ export function DetailModal({ video, onClose, onPlay }: { video: LocalFile, onCl
           className="bg-[#181818] w-full max-w-4xl rounded-lg shadow-2xl overflow-hidden relative mb-10 shrink-0"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Close button */}
-          <button onClick={onClose} className="absolute top-4 right-4 z-10 p-2 bg-[#181818]/60 rounded-full hover:bg-white hover:text-black transition text-white border border-white/20">
-             <X className="w-6 h-6" />
-          </button>
+          <div className="absolute top-0 right-0 z-[100] p-3 pointer-events-none">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onClose(); }}
+              className="pointer-events-auto flex items-center justify-center w-12 h-12 min-w-[3rem] min-h-[3rem] rounded-full bg-black/80 hover:bg-white hover:text-black text-white border border-white/40 transition cursor-pointer shadow-lg"
+              aria-label="Close"
+            >
+              <X size={24} strokeWidth={2.5} aria-hidden />
+            </button>
+          </div>
 
           {/* Hero Image */}
           <div className="relative w-full aspect-[16/7]">
@@ -102,7 +246,7 @@ export function DetailModal({ video, onClose, onPlay }: { video: LocalFile, onCl
             )}
             <div className="absolute inset-0 bg-gradient-to-t from-[#181818] via-[#181818]/20 to-transparent" />
             <div className="absolute bottom-6 left-10 max-w-2xl">
-              <h2 className="text-4xl md:text-5xl font-bold text-white drop-shadow-md mb-6">{video.meta?.title || video.name}</h2>
+              <h2 className="text-4xl md:text-5xl font-bold text-white drop-shadow-md mb-6">{getDisplayTitle(video)}</h2>
               <div className="flex gap-3">
                 <button 
                   onClick={() => {
@@ -116,6 +260,14 @@ export function DetailModal({ video, onClose, onPlay }: { video: LocalFile, onCl
                 >
                   <Play className="w-6 h-6 fill-black" /> Play
                 </button>
+                {!video.isFolder && onUpdate && (
+                  <button
+                    onClick={() => setIsEditing(!isEditing)}
+                    className="flex items-center gap-2 bg-gray-600/80 text-white px-6 py-2 rounded font-bold hover:bg-gray-500/80 transition"
+                  >
+                    <Edit2 className="w-5 h-5" /> {isEditing ? 'Cancel Edit' : 'Edit'}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -125,12 +277,65 @@ export function DetailModal({ video, onClose, onPlay }: { video: LocalFile, onCl
             <div className="flex-1">
               <div className="flex items-center gap-3 text-sm text-gray-400 font-semibold mb-6">
                 <span className="text-green-400">{tmdb?.rating ? `${Math.round(tmdb.rating * 10)}% Match` : '98% Match'}</span>
-                <span>{tmdb?.year || new Date(video.dateModified || Date.now()).getFullYear()}</span>
+                {(video.meta?.year || tmdb?.year) && (
+                  <span>{video.meta?.year || tmdb?.year}</span>
+                )}
                 <span className="border border-gray-600 px-1.5 py-0.5 rounded text-xs">HD</span>
               </div>
-              <p className="text-gray-200 leading-relaxed text-lg mb-8">
-                {tmdb?.synopsis || video.meta?.description || 'No description available for this local file. This file was automatically indexed from your local folders.'}
-              </p>
+              {isEditing ? (
+                <div className="space-y-4 mb-8">
+                  <div>
+                    <label className="text-xs font-semibold text-gray-500 block mb-1">Title</label>
+                    <input
+                      type="text"
+                      value={editForm.title}
+                      onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                      className="w-full bg-black/50 border border-gray-600 rounded-lg px-4 py-2 text-white outline-none focus:border-white transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-gray-500 block mb-1">Description</label>
+                    <textarea
+                      value={editForm.description}
+                      onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                      rows={4}
+                      className="w-full bg-black/50 border border-gray-600 rounded-lg px-4 py-2 text-white outline-none focus:border-white transition resize-none"
+                    />
+                  </div>
+                  <div className="flex gap-4">
+                    <div className="flex-1">
+                      <label className="text-xs font-semibold text-gray-500 block mb-1">Genre</label>
+                      <input
+                        type="text"
+                        value={editForm.genre}
+                        onChange={(e) => setEditForm({ ...editForm, genre: e.target.value })}
+                        placeholder="e.g. Action, Drama"
+                        className="w-full bg-black/50 border border-gray-600 rounded-lg px-4 py-2 text-white outline-none focus:border-white transition"
+                      />
+                    </div>
+                    <div className="w-28">
+                      <label className="text-xs font-semibold text-gray-500 block mb-1">Year</label>
+                      <input
+                        type="text"
+                        value={editForm.year}
+                        onChange={(e) => setEditForm({ ...editForm, year: e.target.value })}
+                        placeholder="1985"
+                        className="w-full bg-black/50 border border-gray-600 rounded-lg px-4 py-2 text-white outline-none focus:border-white transition"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleSaveEdits}
+                    className="flex items-center gap-2 bg-accent text-white px-6 py-2 rounded font-bold hover:opacity-90 transition"
+                  >
+                    <Save className="w-4 h-4" /> Save Changes
+                  </button>
+                </div>
+              ) : (
+                <p className="text-gray-200 leading-relaxed text-lg mb-8">
+                  {tmdb?.synopsis || video.meta?.description || 'No description available for this local file. This file was automatically indexed from your local folders.'}
+                </p>
+              )}
 
               {video.isFolder && subfolderNames.length > 0 && (
                 <div className="mt-8 border-t border-gray-800 pt-8">
@@ -164,9 +369,17 @@ export function DetailModal({ video, onClose, onPlay }: { video: LocalFile, onCl
                 <div className="text-gray-300 break-all font-mono text-xs bg-black/20 p-2 rounded">{video.path}</div>
               </div>
               <div>
-                <span className="text-gray-500 block mb-1">Genres:</span> 
-                <span className="text-gray-300">Local Media, Personal, Video{video.isFolder ? ', Series' : ''}</span>
+                <span className="text-gray-500 block mb-1">Genres:</span>
+                <span className="text-gray-300">
+                  {video.meta?.genre || (video.isFolder ? 'Series' : 'Local Media')}
+                </span>
               </div>
+              {video.meta?.year && (
+                <div>
+                  <span className="text-gray-500 block mb-1">Year:</span>
+                  <span className="text-gray-300">{video.meta.year}</span>
+                </div>
+              )}
             </div>
           </div>
         </motion.div>
@@ -176,7 +389,19 @@ export function DetailModal({ video, onClose, onPlay }: { video: LocalFile, onCl
 }
 
 // --- Video Card (Hover Jawlet) ---
-export function VideoCard({ video, onPlay, onInfo, progress }: { video: LocalFile, onPlay: (v: LocalFile) => void, onInfo: (v: LocalFile) => void, progress?: number }) {
+export function VideoCard({
+  video,
+  onPlay,
+  onInfo,
+  progress,
+  variant = 'carousel',
+}: {
+  video: LocalFile;
+  onPlay: (v: LocalFile) => void;
+  onInfo: (v: LocalFile) => void;
+  progress?: number;
+  variant?: 'carousel' | 'grid';
+}) {
   const [isHovered, setIsHovered] = useState(false);
   const hoverTimeoutRef = useRef<number | null>(null);
   const [tmdb, setTmdb] = useState<TMDBResult | null>(null);
@@ -191,22 +416,28 @@ export function VideoCard({ video, onPlay, onInfo, progress }: { video: LocalFil
     });
   }, [video]);
 
+  const isGrid = variant === 'grid';
+  const cardImageSrc =
+    video.isFolder && tmdb?.backdrop
+      ? tmdb.backdrop
+      : video.thumbnail || video.localFanart || video.localPoster || undefined;
+
   const handleMouseEnter = () => {
-    if (video.isFolder) return;
+    if (video.isFolder || isGrid) return;
     hoverTimeoutRef.current = window.setTimeout(() => {
       setIsHovered(true);
-    }, 400); // 400ms debounce
+    }, 400);
   };
 
   const handleMouseLeave = () => {
-    if (video.isFolder) return;
+    if (video.isFolder || isGrid) return;
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     setIsHovered(false);
   };
 
   return (
     <div 
-      className="relative flex-none w-64 aspect-video rounded-md cursor-pointer transition-transform duration-300 hover:z-50"
+      className={`relative rounded-md cursor-pointer transition-transform duration-300 ${isGrid ? 'w-full aspect-video' : 'flex-none w-64 aspect-video hover:z-50'}`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onClick={() => {
@@ -224,13 +455,11 @@ export function VideoCard({ video, onPlay, onInfo, progress }: { video: LocalFil
         ) : video.thumbnail ? (
           <img src={video.thumbnail} alt={video.meta?.title || video.name} className="w-full h-full object-cover" />
         ) : (
-          <div className="w-full h-full bg-gray-700 flex items-center justify-center p-4 text-center font-bold text-gray-300">
-            {video.meta?.title || video.name}
+          <div className="w-full h-full bg-gray-700 flex items-center justify-center p-4 text-center font-bebas text-gray-300">
+            {getDisplayTitle(video)}
           </div>
         )}
-        <div className="absolute bottom-2 left-2 right-2 text-xs font-bold text-white truncate drop-shadow-md shadow-black">
-          {video.meta?.title || video.name}
-        </div>
+        <ThumbnailTitle title={getDisplayTitle(video)} imageSrc={cardImageSrc} />
         {/* Progress Bar */}
         {progress !== undefined && progress > 0 && (
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-600">
@@ -239,9 +468,9 @@ export function VideoCard({ video, onPlay, onInfo, progress }: { video: LocalFil
         )}
       </div>
 
-      {/* Expanded Hover Card (Jawlet) */}
+      {/* Expanded Hover Card (Jawlet), carousel only */}
       <AnimatePresence>
-        {isHovered && (
+        {!isGrid && isHovered && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1.3 }}
@@ -298,11 +527,63 @@ export function VideoCard({ video, onPlay, onInfo, progress }: { video: LocalFil
   );
 }
 
+function Top10RankNumber({ rank }: { rank: number }) {
+  const isOne = rank === 1;
+  const isTen = rank >= 10;
+
+  return (
+    <div
+      aria-hidden
+      className="absolute inset-y-0 z-0 flex items-end pointer-events-none select-none"
+      style={{ left: isOne ? -14 : isTen ? -18 : 0 }}
+    >
+      <span
+        className="font-bebas tracking-tighter block"
+        style={{
+          marginBottom: 4,
+          fontSize: isTen ? '6.75rem' : '7.25rem',
+          lineHeight: 0.78,
+          letterSpacing: isTen ? '-0.06em' : undefined,
+          color: '#141414',
+          WebkitTextStroke: '2px #737373',
+          paintOrder: 'stroke fill',
+        }}
+      >
+        {rank}
+      </span>
+    </div>
+  );
+}
+
+/** Left inset for the poster so the rank peeks out to the left (Netflix-style overlap). */
+function top10CardInset(rank: number): number {
+  if (rank === 1) return 28;
+  if (rank >= 10) return 58;
+  return 40;
+}
+
 // --- Content Row (Carousel) ---
-export function ContentRow({ title, videos, onPlay, onInfo, progresses = {}, isTop10 = false }: { title: string, videos: LocalFile[], onPlay: (v: LocalFile) => void, onInfo: (v: LocalFile) => void, progresses?: Record<string, number>, isTop10?: boolean }) {
+export function ContentRow({
+  title,
+  videos,
+  onPlay,
+  onInfo,
+  progresses = {},
+  isTop10 = false,
+  expandable = false,
+}: {
+  title: string;
+  videos: LocalFile[];
+  onPlay: (v: LocalFile) => void;
+  onInfo: (v: LocalFile) => void;
+  progresses?: Record<string, number>;
+  isTop10?: boolean;
+  expandable?: boolean;
+}) {
   const rowRef = useRef<HTMLDivElement>(null);
   const [showLeftArrow, setShowLeftArrow] = useState(false);
   const [showRightArrow, setShowRightArrow] = useState(true);
+  const [showGrid, setShowGrid] = useState(false);
 
   const handleScroll = () => {
     if (rowRef.current) {
@@ -330,10 +611,26 @@ export function ContentRow({ title, videos, onPlay, onInfo, progresses = {}, isT
 
   return (
     <div className="mb-8 relative group z-20 hover:z-50">
-      <h2 className="text-xl md:text-2xl font-bold text-gray-200 mb-2 px-10 hover:text-white transition cursor-pointer flex items-center gap-2">
+      <h2
+        className={`text-xl md:text-2xl font-bold text-gray-200 mb-2 px-10 transition flex items-center gap-2 ${expandable ? 'hover:text-white cursor-pointer' : ''}`}
+        onClick={() => expandable && setShowGrid(true)}
+      >
         {title}
-        <ChevronRight className="w-5 h-5 text-transparent group-hover:text-white transition-all translate-x-[-10px] group-hover:translate-x-0" />
+        {expandable && (
+          <ChevronRight className="w-5 h-5 text-transparent group-hover:text-white transition-all translate-x-[-10px] group-hover:translate-x-0" />
+        )}
       </h2>
+
+      {showGrid && (
+        <GridViewModal
+          title={title}
+          videos={videos}
+          onClose={() => setShowGrid(false)}
+          onPlay={(v) => { setShowGrid(false); onPlay(v); }}
+          onInfo={(v) => { setShowGrid(false); onInfo(v); }}
+          progresses={progresses}
+        />
+      )}
       
       {/* Left Arrow */}
       {showLeftArrow && (
@@ -358,20 +655,25 @@ export function ContentRow({ title, videos, onPlay, onInfo, progresses = {}, isT
       <div 
         ref={rowRef}
         onScroll={handleScroll}
-        className="flex gap-2 overflow-x-auto overflow-y-hidden px-10 py-32 -my-28 hide-scrollbar scroll-smooth"
+        className={`flex overflow-x-auto overflow-y-hidden px-10 py-32 -my-28 hide-scrollbar scroll-smooth ${isTop10 ? 'gap-5' : 'gap-2'}`}
       >
-        {videos.map((video, i) => (
-          <div key={`${video.path}-${i}`} className="flex items-end hover:z-50 relative">
-            {isTop10 && (
-              <svg viewBox="0 0 100 100" className="h-full w-auto max-h-[150px] -mr-6 z-10 fill-black stroke-gray-600 drop-shadow-[4px_0_10px_rgba(0,0,0,0.8)] stroke-[2px]">
-                <text x="50" y="95" fontSize="100" fontWeight="900" textAnchor="middle">{i + 1}</text>
-              </svg>
-            )}
-            <div className={isTop10 ? "z-20" : ""}>
-              <VideoCard video={video} onPlay={onPlay} onInfo={onInfo} progress={progresses[video.path] !== undefined && video.duration ? progresses[video.path] / video.duration : 0} />
+        {videos.map((video, i) => {
+          const rank = i + 1;
+          return (
+            <div
+              key={`${video.path}-${i}`}
+              className="relative flex items-end flex-shrink-0 hover:z-50"
+            >
+              {isTop10 && <Top10RankNumber rank={rank} />}
+              <div
+                className={isTop10 ? 'relative z-10 flex-shrink-0' : ''}
+                style={isTop10 ? { marginLeft: top10CardInset(rank) } : undefined}
+              >
+                <VideoCard video={video} onPlay={onPlay} onInfo={onInfo} progress={progresses[video.path] !== undefined && video.duration ? progresses[video.path] / video.duration : 0} />
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
