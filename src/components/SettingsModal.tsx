@@ -513,7 +513,14 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                 )}
               </div>
 
-              <div className="pt-8 mt-8 border-t border-gray-800">
+              <div className="pt-6 border-t border-gray-800">
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  Kudflix uses <a href="https://mpv.io" className="text-gray-400 hover:text-white underline" target="_blank" rel="noreferrer">mpv</a> (LGPL-2.1) for media playback.
+                  Source: <a href="https://github.com/mpv-player/mpv" className="text-gray-400 hover:text-white underline" target="_blank" rel="noreferrer">github.com/mpv-player/mpv</a>
+                </p>
+              </div>
+
+              <div className="pt-8 mt-4 border-t border-gray-800">
                 <button
                   onClick={() => {
                     if (confirm("Are you sure you want to completely reset all settings and library data? The app will reload.")) {

@@ -1,5 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+function subscribe(channel, callback) {
+  const handler = (_event, payload) => callback(payload);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   scanDirectory: (dirPath) => ipcRenderer.invoke('scan-directory', dirPath),
   selectFolder: () => ipcRenderer.invoke('select-folder'),
@@ -7,5 +13,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFile: () => ipcRenderer.invoke('select-file'),
   cacheProfileImage: () => ipcRenderer.invoke('cache-profile-image'),
   playInExternalPlayer: (playerPath, videoPath) => ipcRenderer.invoke('play-in-external-player', playerPath, videoPath),
-  probeMedia: (videoPath) => ipcRenderer.invoke('probe-media', videoPath)
+  probeMedia: (videoPath) => ipcRenderer.invoke('probe-media', videoPath),
+  probeTracks: (videoPath) => ipcRenderer.invoke('probe-tracks', videoPath),
+  findSubtitleFiles: (videoPath) => ipcRenderer.invoke('find-subtitle-files', videoPath),
+  selectSubtitleFile: () => ipcRenderer.invoke('select-subtitle-file'),
+
+  // Library window
+  playerStart: (session) => ipcRenderer.invoke('player-start', session),
+  onPlayerExited: (callback) => subscribe('player-exited', callback),
+  onPlayerRequestNext: (callback) => subscribe('player-request-next', callback),
+
+  // Player controls window
+  playerGetSession: () => ipcRenderer.invoke('player-get-session'),
+  onPlayerSession: (callback) => subscribe('player-session', callback),
+  playerOpen: (filePath, options) => ipcRenderer.invoke('player-open', filePath, options),
+  playerCommand: (action, value) => ipcRenderer.invoke('player-command', action, value),
+  playerToggleFullscreen: () => ipcRenderer.invoke('player-toggle-fullscreen'),
+  playerSetFullscreen: (fullscreen) => ipcRenderer.invoke('player-set-fullscreen', fullscreen),
+  playerRequestNext: () => ipcRenderer.invoke('player-request-next'),
+  playerExit: (payload) => ipcRenderer.invoke('player-exit', payload),
+  onPlayerState: (callback) => subscribe('player-state', callback),
+  onPlayerFullscreen: (callback) => subscribe('player-fullscreen', callback),
 });

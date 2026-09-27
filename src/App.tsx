@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { toBasicFile, enrichLibraryInBackground, mergeEnrichedFiles } from './utils/libraryLoader';
-import { Play, Info, ChevronLeft, FolderSearch, Settings as SettingsIcon, Search, Volume2, VolumeX } from 'lucide-react';
+import { Play, Info, FolderSearch, Settings as SettingsIcon, Search, Volume2, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SettingsModal } from './components/SettingsModal';
 import { ContentRow, DetailModal } from './components/NetflixUI';
 import type { LocalFile } from './components/NetflixUI';
 import { applyMediaOverride, saveMediaOverride, type MediaOverride } from './utils/mediaOverrides';
 import { loadSettings, saveSettings } from './utils/settings';
-import { needsExternalPlayerForAudio } from './utils/mediaProbe';
 import { StartupScreen } from './components/StartupScreen';
 import { ProfilesScreen } from './components/ProfilesScreen';
 import { SearchOverlay } from './components/SearchOverlay';
@@ -29,10 +28,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<'general' | 'library' | 'personalization' | 'profiles' | 'advanced'>('general');
   const [settings, setSettings] = useState(loadSettings);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
   const enrichGenRef = useRef(0);
-  const [showNextOverlay, setShowNextOverlay] = useState(false);
-  const [audioIssue, setAudioIssue] = useState(false);
   const [progresses, setProgresses] = useState<Record<string, number>>({});
 
   useEffect(() => {
@@ -183,7 +179,51 @@ export default function App() {
     return false;
   };
 
-  const handlePlayVideo = async (video: LocalFile) => {
+  const getNextEpisode = (currentVideo: LocalFile | null): LocalFile | null => {
+    if (!currentVideo || currentVideo.category !== 'tv') return null;
+
+    const match = currentVideo.name.match(/(.*?)(s\d+e)(\d+)/i);
+    if (match) {
+      const [, prefix, s_e, epDigits] = match;
+      const nextEpStr = (parseInt(epDigits, 10) + 1).toString().padStart(epDigits.length, '0');
+      const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const nextRegex = new RegExp(`^${escapedPrefix}${s_e}${nextEpStr}(?!\\d)`, 'i');
+      const next = files.find(f => nextRegex.test(f.name));
+      if (next) return next;
+    }
+
+    // Fallback: next file in the same folder, in natural sort order
+    const dir = currentVideo.path.replace(/[\\/][^\\/]*$/, '');
+    const siblings = files
+      .filter(f => !f.isFolder && f.category === 'tv' && f.path.replace(/[\\/][^\\/]*$/, '') === dir)
+      .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
+    const index = siblings.findIndex(f => f.path === currentVideo.path);
+    return index >= 0 && index < siblings.length - 1 ? siblings[index + 1] : null;
+  };
+
+  const episodeLabel = (video: LocalFile) => {
+    const m = video.name.match(/s(\d+)e(\d+)/i);
+    return m ? `S${parseInt(m[1], 10)}:E${parseInt(m[2], 10)}` : undefined;
+  };
+
+  const buildSession = (video: LocalFile): PlayerSession | null => {
+    if (!activeProfile) return null;
+    const progress = JSON.parse(localStorage.getItem(`netflix_progress_${activeProfile}`) || '{}');
+    let startTime = progress[video.path] || 0;
+    // Restart finished items from the beginning
+    if (video.duration && startTime > video.duration - 30) startTime = 0;
+    const next = getNextEpisode(video);
+    return {
+      path: video.path,
+      title: video.meta?.title || video.name,
+      subtitle: episodeLabel(video),
+      profileId: activeProfile,
+      startTime,
+      next: next ? { path: next.path, title: next.meta?.title || next.name, subtitle: episodeLabel(next) } : null,
+    };
+  };
+
+  const handlePlayVideo = (video: LocalFile) => {
     if (activeProfile) {
       const counts = JSON.parse(localStorage.getItem(`netflix_playcounts_${activeProfile}`) || '{}');
       counts[video.path] = (counts[video.path] || 0) + 1;
@@ -192,82 +232,36 @@ export default function App() {
 
     if (settings.useExternalPlayer && playInExternal(video)) return;
 
-    setAudioIssue(false);
+    const session = buildSession(video);
+    if (!session || !window.electronAPI?.playerStart) return;
     setPlayingVideo(video);
-
-    // Unsupported audio (AC3/DTS/etc.), stay in internal player; offer external via banner
-    if (!settings.useExternalPlayer) {
-      const needsExternal = await needsExternalPlayerForAudio(video.path);
-      if (needsExternal) setAudioIssue(true);
-    }
+    window.electronAPI.playerStart(session);
   };
 
-  // Detect silent playback when ffprobe isn't available (no decoded audio after a few seconds)
+  // Keep handlers fresh for the IPC listeners below without re-subscribing
+  const playerHandlersRef = useRef({ handlePlayVideo, getNextEpisode, files });
+  playerHandlersRef.current = { handlePlayVideo, getNextEpisode, files };
+
   useEffect(() => {
-    if (!playingVideo) {
-      setAudioIssue(false);
-      return;
-    }
+    const api = window.electronAPI;
+    if (!api?.onPlayerExited) return;
 
-    const timer = window.setTimeout(() => {
-      const v = videoRef.current;
-      if (!v || v.paused || v.currentTime < 0.3) return;
-      const decoded = (v as HTMLVideoElement & { webkitAudioDecodedByteCount?: number }).webkitAudioDecodedByteCount;
-      if (typeof decoded === 'number' && decoded === 0) {
-        setAudioIssue(true);
+    const offExited = api.onPlayerExited(() => {
+      setPlayingVideo(null);
+      if (activeProfile) {
+        setProgresses(JSON.parse(localStorage.getItem(`netflix_progress_${activeProfile}`) || '{}'));
       }
-    }, 3000);
+    });
 
-    return () => window.clearTimeout(timer);
-  }, [playingVideo?.path]);
+    const offNext = api.onPlayerRequestNext((currentPath) => {
+      const { files: list, getNextEpisode: findNext, handlePlayVideo: play } = playerHandlersRef.current;
+      const current = list.find(f => f.path === currentPath) ?? null;
+      const next = findNext(current);
+      if (next) play(next);
+    });
 
-
-
-  // Video Player Progress Tracking
-  const handleTimeUpdate = () => {
-    if (videoRef.current && playingVideo && activeProfile) {
-      const { currentTime, duration } = videoRef.current;
-      
-      // Save progress to local storage
-      const progress = JSON.parse(localStorage.getItem(`netflix_progress_${activeProfile}`) || '{}');
-      progress[playingVideo.path] = currentTime;
-      localStorage.setItem(`netflix_progress_${activeProfile}`, JSON.stringify(progress));
-      setProgresses(progress);
-
-      // Show Next Overlay if in last 15 seconds
-      if (duration - currentTime <= 15 && duration > 0) {
-        setShowNextOverlay(true);
-      } else {
-        setShowNextOverlay(false);
-      }
-    }
-  };
-
-  const handleVideoLoaded = () => {
-    if (videoRef.current && playingVideo && activeProfile) {
-      const progress = JSON.parse(localStorage.getItem(`netflix_progress_${activeProfile}`) || '{}');
-      if (progress[playingVideo.path]) {
-        videoRef.current.currentTime = progress[playingVideo.path];
-      }
-    }
-  };
-
-  const getNextEpisode = (currentVideo: LocalFile | null) => {
-    if (!currentVideo) return null;
-    const match = currentVideo.name.match(/(.*?)(s\d+e)(\d+)/i);
-    if (!match) return null;
-
-    const prefix = match[1];
-    const s_e = match[2];
-    const episodeNum = parseInt(match[3], 10);
-    
-    const nextEpStr = (episodeNum + 1).toString().padStart(match[3].length, '0');
-    // Escape prefix for regex
-    const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const nextRegex = new RegExp(`^${escapedPrefix}${s_e}${nextEpStr}`, 'i');
-    
-    return files.find(f => nextRegex.test(f.name)) || null;
-  };
+    return () => { offExited(); offNext(); };
+  }, [activeProfile]);
 
   // Grouping for rows
   const { shows, movies, continueWatching, top10, collections, folders } = useMemo(() => {
@@ -535,7 +529,7 @@ export default function App() {
                     <div 
                       className={`absolute inset-0 w-full h-full transition-opacity duration-1000 ${isVideoPlaying ? 'opacity-100' : 'opacity-0'}`}
                     >
-                      {delayOver && (
+                      {delayOver && !playingVideo && (
                         <video
                           ref={heroVideoRef}
                           src={`file:///${featured.path.replace(/\\/g, '/')}`}
@@ -640,104 +634,17 @@ export default function App() {
         />
       )}
 
-      {/* Video Player Modal */}
-      <AnimatePresence>
-        {playingVideo && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[600] bg-black flex items-center justify-center group"
+      {/* Backdrop while the player windows sit on top; the top strip stays draggable */}
+      {playingVideo && (
+        <div className="fixed inset-0 z-[1000] bg-black">
+          <div
+            className="h-8 flex items-center px-4 text-xs text-white/50 truncate pr-40"
+            style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
           >
-            {/* Top bar, title + back (Netflix-style, shows on hover) */}
-            <div className="absolute top-0 left-0 w-full px-8 pt-6 pb-16 bg-gradient-to-b from-black/90 via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-[301] pointer-events-none">
-              <div className="flex items-center gap-5 pointer-events-auto max-w-[70%]">
-                <button
-                  onClick={() => setPlayingVideo(null)}
-                  className="flex-shrink-0 p-1 text-white hover:text-gray-300 transition"
-                  aria-label="Back to Browse"
-                >
-                  <ChevronLeft className="w-8 h-8" />
-                </button>
-                <h1 className="font-bebas text-2xl md:text-3xl text-white/75 tracking-[0.12em] truncate drop-shadow-lg">
-                  {playingVideo.meta?.title || playingVideo.name}
-                </h1>
-              </div>
-            </div>
-            
-            <video 
-              ref={videoRef}
-              src={`file:///${playingVideo.path.replace(/\\/g, '/')}`} 
-              controls 
-              autoPlay
-              playsInline
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={handleVideoLoaded}
-              className="w-full h-full outline-none"
-            />
-
-            {audioIssue && (
-              <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-[602] max-w-lg w-[90%] bg-[#181818]/95 border border-gray-600 rounded-lg px-5 py-4 text-center shadow-2xl">
-                <p className="text-white text-sm font-semibold mb-1">No audio in built-in player</p>
-                <p className="text-gray-400 text-xs mb-3">
-                  This file likely uses AC3, DTS, or another codec Chromium can&apos;t decode. PotPlayer and VLC handle these fine.
-                </p>
-                {settings.externalPlayerPath ? (
-                  <button
-                    onClick={() => {
-                      if (playingVideo) playInExternal(playingVideo);
-                    }}
-                    className="bg-white text-black px-5 py-2 rounded font-bold text-sm hover:bg-gray-200 transition"
-                  >
-                    Open in external player
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => { setPlayingVideo(null); setSettingsTab('advanced'); setShowSettings(true); }}
-                    className="bg-accent text-white px-5 py-2 rounded font-bold text-sm hover:opacity-90 transition"
-                  >
-                    Set up external player in Settings
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* Next Episode Binge Overlay */}
-            <AnimatePresence>
-              {showNextOverlay && getNextEpisode(playingVideo) && (
-                <motion.div 
-                  initial={{ opacity: 0, x: 50 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 50 }}
-                  className="absolute bottom-24 right-10 bg-[#181818]/90 p-4 rounded shadow-2xl border border-gray-600/50 flex flex-col gap-2 z-[302] w-72"
-                >
-                  <p className="text-gray-300 font-bold text-sm">Next episode in 15 seconds...</p>
-                  <div className="text-white font-bold truncate">{getNextEpisode(playingVideo)?.meta?.title || getNextEpisode(playingVideo)?.name}</div>
-                  <button 
-                    onClick={() => {
-                      const next = getNextEpisode(playingVideo);
-                      if (next) {
-                        setShowNextOverlay(false);
-                        handlePlayVideo(next);
-                      }
-                    }}
-                    className="mt-2 flex items-center justify-center gap-2 bg-white text-black py-2 rounded font-bold hover:bg-gray-200 transition"
-                  >
-                    <Play className="w-4 h-4 fill-black" /> Watch Next
-                  </button>
-                  <button 
-                    onClick={() => setShowNextOverlay(false)}
-                    className="text-gray-400 text-xs text-center mt-1 hover:text-white"
-                  >
-                    Cancel
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      
+            {settings.appName} · {playingVideo.meta?.title || playingVideo.name}
+          </div>
+        </div>
+      )}
         </>
       )}
 

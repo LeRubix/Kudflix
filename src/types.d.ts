@@ -1,6 +1,86 @@
 export {};
 
 declare global {
+  interface MpvTrack {
+    id: number;
+    type: 'video' | 'audio' | 'sub' | string;
+    title?: string;
+    lang?: string;
+    codec?: string;
+    selected?: boolean;
+    external?: boolean;
+    'external-filename'?: string;
+    'demux-channel-count'?: number;
+    'audio-channels'?: number;
+    default?: boolean;
+  }
+
+  interface PlayerState {
+    timePos: number;
+    duration: number;
+    pause: boolean;
+    volume: number;
+    mute: boolean;
+    speed: number;
+    buffering: boolean;
+    seeking: boolean;
+    eof: boolean;
+    loaded: boolean;
+    error: string | null;
+    tracks: MpvTrack[];
+  }
+
+  interface PlayerSession {
+    path: string;
+    title: string;
+    subtitle?: string;
+    profileId: string;
+    startTime: number;
+    next: { path: string; title: string; subtitle?: string; thumbnail?: string } | null;
+  }
+
+  interface PlayerExitPayload {
+    path: string;
+    position: number;
+    duration: number;
+  }
+
+  interface ProbeTrack {
+    index: number;
+    mpvId: number;
+    codec: string;
+    language: string;
+    title: string;
+    label: string;
+  }
+
+  interface ExternalSubtitleFile {
+    path: string;
+    name: string;
+    language: string;
+    label: string;
+  }
+
+  interface SubtitleStyleOptions {
+    scale?: number;
+    fontSize?: number;
+    color?: string;
+    marginY?: number;
+    borderSize?: number;
+    backColor?: string;
+    shadowOffset?: number;
+  }
+
+  interface PlayerOpenOptions {
+    volume?: number;
+    mute?: boolean;
+    startTime?: number;
+    audioId?: number;
+    subtitleId?: number | 'no';
+    externalSubtitle?: string;
+    subtitleStyle?: SubtitleStyleOptions;
+  }
+
   interface Window {
     electronAPI: {
       scanDirectory: (dirPath: string) => Promise<{name: string, path: string, relativePath?: string, folderName?: string, localPoster?: string | null, localFanart?: string | null, localNfoContent?: string | null}[]>;
@@ -10,6 +90,24 @@ declare global {
       cacheProfileImage: () => Promise<string | null>;
       playInExternalPlayer: (playerPath: string, videoPath: string) => Promise<void>;
       probeMedia: (videoPath: string) => Promise<{ audioCodec: string | null; hasAudio: boolean | null }>;
+      probeTracks: (videoPath: string) => Promise<{ audio: ProbeTrack[]; subtitles: ProbeTrack[] }>;
+      findSubtitleFiles: (videoPath: string) => Promise<ExternalSubtitleFile[]>;
+      selectSubtitleFile: () => Promise<string | null>;
+
+      playerStart: (session: PlayerSession) => Promise<{ ok: boolean }>;
+      onPlayerExited: (callback: (payload: PlayerExitPayload | null) => void) => () => void;
+      onPlayerRequestNext: (callback: (currentPath: string | null) => void) => () => void;
+
+      playerGetSession: () => Promise<PlayerSession | null>;
+      onPlayerSession: (callback: (session: PlayerSession) => void) => () => void;
+      playerOpen: (filePath: string, options?: PlayerOpenOptions) => Promise<{ ok: boolean; error?: string; state?: PlayerState }>;
+      playerCommand: (action: string, value?: unknown) => Promise<{ ok: boolean; error?: string }>;
+      playerToggleFullscreen: () => Promise<boolean>;
+      playerSetFullscreen: (fullscreen: boolean) => Promise<boolean>;
+      playerRequestNext: () => Promise<{ ok: boolean }>;
+      playerExit: (payload: PlayerExitPayload | null) => Promise<{ ok: boolean }>;
+      onPlayerState: (callback: (state: PlayerState) => void) => () => void;
+      onPlayerFullscreen: (callback: (fullscreen: boolean) => void) => () => void;
     }
   }
 }

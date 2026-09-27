@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "setup-mpv": "node scripts/download-mpv.cjs",
     "start": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "package": "npm run build && electron-builder -w -c.mac.identity=null"
   },
@@ -32,7 +33,15 @@
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "!electron/bin/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "electron/bin/mpv",
+        "to": "mpv",
+        "filter": ["**/*"]
+      }
     ]
   },
   "dependencies": {

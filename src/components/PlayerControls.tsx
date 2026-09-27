@@ -1,0 +1,328 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  ArrowLeft, Play, Pause, RotateCcw, RotateCw, Volume1, Volume2, VolumeX,
+  Maximize, Minimize, SkipForward, Captions, Gauge,
+} from 'lucide-react';
+import { AudioSubtitlePanel, SpeedPanel } from './TrackMenu';
+import { formatTime, type SubtitleStyle } from '../utils/subtitles';
+
+export type PlayerPanel = 'tracks' | 'speed' | null;
+
+interface ProgressBarProps {
+  timePos: number;
+  duration: number;
+  playing: boolean;
+  speed: number;
+  onSeek: (time: number) => void;
+  onScrubbingChange: (scrubbing: boolean) => void;
+}
+
+function ProgressBar({ timePos, duration, playing, speed, onSeek, onScrubbingChange }: ProgressBarProps) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
+  const remainingRef = useRef<HTMLSpanElement>(null);
+  const base = useRef({ time: timePos, at: performance.now() });
+  const pendingSeek = useRef<{ time: number; until: number } | null>(null);
+  const [scrubTime, setScrubTime] = useState<number | null>(null);
+  const [hover, setHover] = useState<{ x: number; time: number } | null>(null);
+
+  useEffect(() => {
+    const pending = pendingSeek.current;
+    if (pending && Math.abs(timePos - pending.time) > 1.5 && performance.now() < pending.until) return;
+    pendingSeek.current = null;
+    base.current = { time: timePos, at: performance.now() };
+  }, [timePos]);
+
+  useEffect(() => {
+    if (!playing) base.current = { time: base.current.time, at: performance.now() };
+  }, [playing]);
+
+  useEffect(() => {
+    let frame = 0;
+    const render = () => {
+      let t: number;
+      if (scrubTime !== null) {
+        t = scrubTime;
+      } else if (pendingSeek.current) {
+        t = pendingSeek.current.time;
+      } else {
+        const { time, at } = base.current;
+        t = playing ? Math.min(time + ((performance.now() - at) / 1000) * speed, time + 1) : time;
+      }
+      if (duration > 0) t = Math.min(t, duration);
+      const pct = duration > 0 ? (t / duration) * 100 : 0;
+      if (fillRef.current) fillRef.current.style.width = `${pct}%`;
+      if (thumbRef.current) thumbRef.current.style.left = `${pct}%`;
+      if (remainingRef.current) remainingRef.current.textContent = formatTime(Math.max(0, duration - t));
+      frame = requestAnimationFrame(render);
+    };
+    frame = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(frame);
+  }, [playing, speed, duration, scrubTime]);
+
+  const timeAt = (clientX: number) => {
+    const rect = trackRef.current!.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return { time: ratio * duration, x: ratio * rect.width };
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (duration <= 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setScrubTime(timeAt(e.clientX).time);
+    onScrubbingChange(true);
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (duration <= 0) return;
+    const pos = timeAt(e.clientX);
+    setHover(pos);
+    if (scrubTime !== null) setScrubTime(pos.time);
+  };
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (scrubTime === null) return;
+    const { time } = timeAt(e.clientX);
+    pendingSeek.current = { time, until: performance.now() + 2500 };
+    base.current = { time, at: performance.now() };
+    setScrubTime(null);
+    onScrubbingChange(false);
+    onSeek(time);
+  };
+
+  const tooltip = scrubTime !== null && hover ? { ...hover, time: scrubTime } : hover;
+
+  return (
+    <div className="flex items-center gap-4">
+      <div
+        ref={trackRef}
+        className="group/bar relative flex-1 h-5 flex items-center cursor-pointer touch-none"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => setHover(null)}
+      >
+        <div className={`relative w-full bg-white/25 transition-[height] duration-150 ${scrubTime !== null ? 'h-2' : 'h-1 group-hover/bar:h-2'}`}>
+          {hover && (
+            <div className="absolute inset-y-0 left-0 bg-white/30" style={{ width: hover.x }} />
+          )}
+          <div ref={fillRef} className="absolute inset-y-0 left-0 bg-accent" />
+        </div>
+        <div
+          ref={thumbRef}
+          className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent shadow-lg transition-transform duration-150 ${
+            scrubTime !== null ? 'w-5 h-5 scale-110' : 'w-4 h-4 scale-0 group-hover/bar:scale-100'
+          }`}
+        />
+        {tooltip && (
+          <div
+            className="absolute bottom-7 -translate-x-1/2 px-2 py-1 rounded bg-black/85 text-white text-sm font-semibold tabular-nums pointer-events-none"
+            style={{ left: tooltip.x }}
+          >
+            {formatTime(tooltip.time)}
+          </div>
+        )}
+      </div>
+      <span ref={remainingRef} className="text-white text-sm font-medium tabular-nums min-w-[3.5rem] text-right">
+        {formatTime(Math.max(0, duration - timePos))}
+      </span>
+    </div>
+  );
+}
+
+function IconButton({ label, onClick, children, active }: { label: string; onClick: () => void; children: ReactNode; active?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`relative flex items-center justify-center w-11 h-11 text-white transition-transform duration-150 hover:scale-125 focus:outline-none ${active ? 'scale-125' : ''}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SkipIcon({ direction }: { direction: 'back' | 'forward' }) {
+  const Icon = direction === 'back' ? RotateCcw : RotateCw;
+  return (
+    <span className="relative flex items-center justify-center">
+      <Icon className="w-9 h-9" strokeWidth={1.75} />
+      <span className="absolute text-[10px] font-extrabold pt-0.5">10</span>
+    </span>
+  );
+}
+
+interface PlayerControlsProps {
+  title: string;
+  subtitle?: string;
+  state: PlayerState;
+  volume: number;
+  muted: boolean;
+  visible: boolean;
+  isFullscreen: boolean;
+  openPanel: PlayerPanel;
+  audioTracks: MpvTrack[];
+  subtitleTracks: MpvTrack[];
+  selectedAudioId: number | null;
+  selectedSubtitleId: number | null;
+  hasNext: boolean;
+  onPanelChange: (panel: PlayerPanel) => void;
+  onBack: () => void;
+  onTogglePause: () => void;
+  onSeek: (time: number) => void;
+  onSkip: (delta: number) => void;
+  onVolumeChange: (volume: number) => void;
+  onMute: () => void;
+  onSpeedChange: (speed: number) => void;
+  onSelectAudio: (id: number) => void;
+  onSelectSubtitle: (id: number | null) => void;
+  onImportSubtitle: () => void;
+  subtitleStyle: SubtitleStyle;
+  onSubtitleStyleChange: (style: SubtitleStyle) => void;
+  onFullscreen: () => void;
+  onNext: () => void;
+  onScrubbingChange: (scrubbing: boolean) => void;
+}
+
+export function PlayerControls(props: PlayerControlsProps) {
+  const {
+    title, subtitle, state, volume, muted, visible, isFullscreen, openPanel,
+    audioTracks, subtitleTracks, selectedAudioId, selectedSubtitleId, hasNext,
+    onPanelChange, onBack, onTogglePause, onSeek, onSkip, onVolumeChange, onMute,
+    onSpeedChange, onSelectAudio, onSelectSubtitle, onImportSubtitle,
+    subtitleStyle, onSubtitleStyleChange, onFullscreen, onNext,
+    onScrubbingChange,
+  } = props;
+
+  const effectiveVolume = muted ? 0 : volume;
+  const VolumeIcon = effectiveVolume === 0 ? VolumeX : effectiveVolume < 50 ? Volume1 : Volume2;
+  const togglePanel = (panel: Exclude<PlayerPanel, null>) => onPanelChange(openPanel === panel ? null : panel);
+  const closePanel = () => onPanelChange(null);
+
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+
+  return (
+    <div className={`absolute inset-0 transition-opacity duration-300 pointer-events-none ${visible ? 'opacity-100' : 'opacity-0'}`}>
+      {openPanel && (
+        <div
+          className="fixed inset-0 z-30 pointer-events-auto"
+          onClick={closePanel}
+          aria-hidden
+        />
+      )}
+
+      {/* Top bar */}
+      <div className="absolute top-0 inset-x-0 h-32 bg-gradient-to-b from-black/70 to-transparent pointer-events-none" />
+      <div className="absolute top-0 left-0 p-6 md:px-10 pointer-events-auto" onClick={stop} onDoubleClick={stop}>
+        <button
+          onClick={onBack}
+          aria-label="Back to browse"
+          className="text-white transition-transform duration-150 hover:scale-125"
+        >
+          <ArrowLeft className="w-10 h-10" strokeWidth={2} />
+        </button>
+      </div>
+
+      {/* Bottom bar */}
+      <div className="absolute bottom-0 inset-x-0 h-48 bg-gradient-to-t from-black/85 via-black/40 to-transparent pointer-events-none" />
+      <div className="absolute bottom-0 inset-x-0 px-6 md:px-10 pb-5 pointer-events-auto" onClick={stop} onDoubleClick={stop}>
+        <ProgressBar
+          timePos={state.timePos}
+          duration={state.duration}
+          playing={!state.pause && state.loaded && !state.buffering}
+          speed={state.speed}
+          onSeek={onSeek}
+          onScrubbingChange={onScrubbingChange}
+        />
+
+        <div className="mt-3 flex items-center gap-2 md:gap-4">
+          <IconButton label={state.pause ? 'Play (Space)' : 'Pause (Space)'} onClick={onTogglePause}>
+            {state.pause ? <Play className="w-9 h-9 fill-white" /> : <Pause className="w-9 h-9 fill-white" />}
+          </IconButton>
+          <IconButton label="Back 10 seconds (←)" onClick={() => onSkip(-10)}>
+            <SkipIcon direction="back" />
+          </IconButton>
+          <IconButton label="Forward 10 seconds (→)" onClick={() => onSkip(10)}>
+            <SkipIcon direction="forward" />
+          </IconButton>
+
+          <div className="group/vol flex items-center">
+            <IconButton label={muted ? 'Unmute (M)' : 'Mute (M)'} onClick={onMute}>
+              <VolumeIcon className="w-9 h-9" />
+            </IconButton>
+            <div className="w-0 overflow-hidden group-hover/vol:w-28 transition-[width] duration-200">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={effectiveVolume}
+                onChange={(e) => onVolumeChange(Number(e.target.value))}
+                className="player-range w-24 ml-2"
+                style={{ '--fill': `${effectiveVolume}%` } as React.CSSProperties}
+                aria-label="Volume"
+              />
+            </div>
+          </div>
+
+          <div className="flex-1 min-w-0 text-center px-4 truncate">
+            <span className="text-white text-lg font-bold">{title}</span>
+            {subtitle && <span className="text-white/70 text-lg ml-3">{subtitle}</span>}
+          </div>
+
+          {hasNext && (
+            <IconButton label="Next episode (Shift+N)" onClick={onNext}>
+              <SkipForward className="w-9 h-9 fill-white" />
+            </IconButton>
+          )}
+
+          <div className="relative">
+            <IconButton label="Audio & Subtitles (C)" onClick={() => togglePanel('tracks')} active={openPanel === 'tracks'}>
+              <Captions className="w-9 h-9" />
+            </IconButton>
+            {openPanel === 'tracks' && (
+              <div
+                className="absolute bottom-full right-0 mb-4 z-40 bg-[#262626]/95 rounded-md shadow-2xl backdrop-blur-sm pointer-events-auto"
+                onClick={stop}
+                onDoubleClick={stop}
+              >
+                <AudioSubtitlePanel
+                  audioTracks={audioTracks}
+                  subtitleTracks={subtitleTracks}
+                  selectedAudioId={selectedAudioId}
+                  selectedSubtitleId={selectedSubtitleId}
+                  subtitleStyle={subtitleStyle}
+                  onSelectAudio={onSelectAudio}
+                  onSelectSubtitle={onSelectSubtitle}
+                  onImportSubtitle={onImportSubtitle}
+                  onSubtitleStyleChange={onSubtitleStyleChange}
+                  onClose={closePanel}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="relative">
+            <IconButton label="Playback speed" onClick={() => togglePanel('speed')} active={openPanel === 'speed'}>
+              <Gauge className="w-9 h-9" />
+            </IconButton>
+            {openPanel === 'speed' && (
+              <div
+                className="absolute bottom-full right-0 mb-4 z-40 bg-[#262626]/95 rounded-md shadow-2xl backdrop-blur-sm pointer-events-auto"
+                onClick={stop}
+                onDoubleClick={stop}
+              >
+                <SpeedPanel speed={state.speed} onSelect={onSpeedChange} onClose={closePanel} />
+              </div>
+            )}
+          </div>
+
+          <IconButton label={isFullscreen ? 'Exit full screen (F)' : 'Full screen (F)'} onClick={onFullscreen}>
+            {isFullscreen ? <Minimize className="w-9 h-9" /> : <Maximize className="w-9 h-9" />}
+          </IconButton>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,20 +1,65 @@
 const { app, BrowserWindow, ipcMain, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { MpvController } = require('./mpvController.cjs');
+const { probeMediaAudio, probeTracks, findSubtitleFiles } = require('./mediaUtils.cjs');
+const { PlayerWindows, TITLE_STRIP_HEIGHT } = require('./playerWindows.cjs');
 
 const isDev = !app.isPackaged;
+
+let mainWindow = null;
+let playerWindows = null;
+let playerSession = null;
+const mpvController = new MpvController();
+
+mpvController.onStateChange = (state) => {
+  playerWindows?.sendToControls('player-state', state);
+};
 
 // Allow unmuted autoplay
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
+function getPlayerWindows() {
+  if (!playerWindows) {
+    playerWindows = new PlayerWindows(mainWindow, {
+      isDev,
+      preloadPath: path.join(__dirname, 'preload.cjs'),
+      indexHtmlPath: path.join(__dirname, '../dist/index.html'),
+    });
+    // Closed by the OS (e.g. Alt+F4 on the controls window)
+    playerWindows.onControlsClosed = () => { exitPlayer(null); };
+  }
+  return playerWindows;
+}
+
+let exiting = false;
+async function exitPlayer(payload) {
+  if (exiting) return;
+  exiting = true;
+  try {
+    await mpvController.close();
+    playerWindows?.close();
+    playerSession = null;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('player-exited', payload ?? null);
+    }
+  } finally {
+    exiting = false;
+  }
+}
+
 function createWindow() {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
+    minWidth: 640,
+    minHeight: 400,
+    backgroundColor: '#141414',
     titleBarStyle: 'hidden',
     titleBarOverlay: {
       color: '#141414',
-      symbolColor: '#ffffff'
+      symbolColor: '#ffffff',
+      height: TITLE_STRIP_HEIGHT,
     },
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -30,7 +75,21 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  mainWindow.on('close', () => {
+    mpvController.close();
+    playerWindows?.close();
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    playerWindows = null;
+  });
 }
+
+app.on('before-quit', () => {
+  mpvController.close();
+});
 
 app.whenReady().then(() => {
   // Register custom protocol to load local video files
@@ -198,35 +257,91 @@ ipcMain.handle('play-in-external-player', async (event, playerPath, videoPath) =
   });
 });
 
-// Probe audio codec via ffprobe (if installed) Chromium can't play AC3/DTS/etc.
+// Probe audio codec via ffprobe
 ipcMain.handle('probe-media', async (event, videoPath) => {
-  const { execFile } = require('child_process');
+  return probeMediaAudio(videoPath);
+});
 
-  const runProbe = (cmd) => new Promise((resolve) => {
-    execFile(cmd, [
-      '-v', 'error',
-      '-select_streams', 'a:0',
-      '-show_entries', 'stream=codec_name',
-      '-of', 'default=noprint_wrappers=1:nokey=1',
-      videoPath
-    ], { timeout: 8000, windowsHide: true }, (err, stdout) => {
-      if (err) return resolve(null);
-      const codec = (stdout || '').trim().toLowerCase();
-      resolve(codec || null);
-    });
+// Probe all audio and subtitle tracks
+ipcMain.handle('probe-tracks', async (event, videoPath) => {
+  return probeTracks(videoPath);
+});
+
+// Find external subtitle files matching a video
+ipcMain.handle('find-subtitle-files', async (event, videoPath) => {
+  return findSubtitleFiles(videoPath);
+});
+
+// Native subtitle file picker
+ipcMain.handle('select-subtitle-file', async (event) => {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(parent, {
+    properties: ['openFile'],
+    filters: [{
+      name: 'Subtitles',
+      extensions: ['srt', 'vtt', 'ass', 'ssa', 'sub'],
+    }],
   });
+  if (result.canceled) return null;
+  return result.filePaths[0];
+});
 
-  const candidates = ['ffprobe'];
-  if (process.platform === 'win32') {
-    candidates.push('C:\\ffmpeg\\bin\\ffprobe.exe');
+// ---- Player ----
+// Library window: player-start / onPlayerExited / onPlayerRequestNext
+// Controls window: player-get-session / player-open / player-command / player-exit / ...
+
+ipcMain.handle('player-start', async (event, session) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  playerSession = session;
+  const windows = getPlayerWindows();
+  if (windows.isOpen()) {
+    windows.sendToControls('player-session', session);
+    windows.controlsWindow?.focus();
+  } else {
+    windows.open();
   }
+  return { ok: true };
+});
 
-  for (const cmd of candidates) {
-    const codec = await runProbe(cmd);
-    if (codec) {
-      return { audioCodec: codec, hasAudio: true };
-    }
+ipcMain.handle('player-get-session', async () => playerSession);
+
+ipcMain.handle('player-open', async (event, filePath, options) => {
+  try {
+    const windows = getPlayerWindows();
+    await mpvController.open(windows.getVideoHwnd(), filePath, options || {});
+    return { ok: true, state: mpvController.getState() };
+  } catch (err) {
+    console.error('[player-open]', err);
+    return { ok: false, error: err.message };
   }
+});
 
-  return { audioCodec: null, hasAudio: null };
+ipcMain.handle('player-command', async (event, action, value) => {
+  try {
+    await mpvController.run(action, value);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('player-toggle-fullscreen', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  return getPlayerWindows().setFullscreen(!mainWindow.isFullScreen());
+});
+
+ipcMain.handle('player-set-fullscreen', async (event, fullscreen) => {
+  return getPlayerWindows().setFullscreen(Boolean(fullscreen));
+});
+
+ipcMain.handle('player-request-next', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('player-request-next', playerSession?.path ?? null);
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('player-exit', async (event, payload) => {
+  await exitPlayer(payload);
+  return { ok: true };
 });
