@@ -1,5 +1,9 @@
 import type { LocalFile } from '../components/NetflixUI';
-import { applyMediaOverride } from './mediaOverrides';
+import { applyMediaOverride, isTmdbDisabled } from './mediaOverrides';
+import { parseSeriesFolderName } from './metadata';
+import { getCachedForVideo } from './tmdb';
+
+const JUNK_GENRES = new Set(['Local Media', 'Movie', 'Series', '']);
 
 export function getSeriesRoot(relativePath?: string): string | null {
   if (!relativePath) return null;
@@ -36,6 +40,7 @@ export function buildSeriesFolders(shows: LocalFile[]): LocalFile[] {
     );
     const fanart = sorted.find((ep) => ep.localFanart)?.localFanart ?? null;
     const poster = sorted.find((ep) => ep.localPoster)?.localPoster ?? null;
+    const { title: seriesTitle, year: seriesYear } = parseSeriesFolderName(root);
     const folder: LocalFile = {
       name: root,
       path: `folder://${root}`,
@@ -46,7 +51,8 @@ export function buildSeriesFolders(shows: LocalFile[]): LocalFile[] {
       localFanart: fanart,
       localPoster: poster,
       meta: {
-        title: root,
+        title: seriesTitle,
+        year: seriesYear,
         description: `A collection of ${sorted.length} video files inside the ${root} folder.`,
       },
       dateModified: Date.now(),
@@ -169,31 +175,45 @@ export function cardProgress(
   return pos / src.duration;
 }
 
-export function buildCollections(movies: LocalFile[]) {
+export function getItemGenres(item: LocalFile): string[] {
+  const seen = new Set<string>();
+  const genres: string[] = [];
+
+  const add = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || JUNK_GENRES.has(trimmed) || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    genres.push(trimmed);
+  };
+
+  if (item.meta?.genre) {
+    for (const part of item.meta.genre.split(',')) add(part);
+  }
+
+  if (!isTmdbDisabled(item)) {
+    const cached = getCachedForVideo(item);
+    for (const genre of cached?.genres ?? []) add(genre);
+  }
+
+  return genres;
+}
+
+export function buildGenreRows(
+  items: LocalFile[],
+  options?: { minItems?: number },
+): { title: string; videos: LocalFile[] }[] {
+  const minItems = options?.minItems ?? 2;
   const genreMap = new Map<string, LocalFile[]>();
-  const folderMap = new Map<string, LocalFile[]>();
 
-  movies.forEach((m) => {
-    const g = m.meta?.genre;
-    if (g && g !== 'Movie' && g !== 'Local Media') {
-      const primary = g.split(',')[0].trim();
-      if (!genreMap.has(primary)) genreMap.set(primary, []);
-      genreMap.get(primary)!.push(m);
+  for (const item of items) {
+    for (const genre of getItemGenres(item)) {
+      if (!genreMap.has(genre)) genreMap.set(genre, []);
+      genreMap.get(genre)!.push(item);
     }
+  }
 
-    if (m.folderName) {
-      if (!folderMap.has(m.folderName)) folderMap.set(m.folderName, []);
-      folderMap.get(m.folderName)!.push(m);
-    }
-  });
-
-  const collections = Array.from(genreMap.entries())
-    .filter(([, v]) => v.length >= 2)
-    .map(([k, v]) => ({ title: `${k} Movies`, videos: v }));
-
-  const franchises = Array.from(folderMap.entries())
-    .filter(([, v]) => v.length >= 2)
-    .map(([k, v]) => ({ title: `${k} Collection`, videos: v }));
-
-  return [...franchises, ...collections];
+  return Array.from(genreMap.entries())
+    .filter(([, videos]) => videos.length >= minItems)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([title, videos]) => ({ title, videos }));
 }

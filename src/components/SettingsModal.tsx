@@ -1,7 +1,12 @@
 import { useState, useEffect } from 'react';
 import { X, Palette, Image as ImageIcon, Save, Type, Maximize, Settings as SettingsIcon, MonitorPlay, ShieldAlert, Check, User, Upload, Edit2, FolderOpen, Trash2 } from 'lucide-react';
 import type { Profile } from './ProfilesScreen';
-import { MAX_APP_NAME_LENGTH, truncateAppName } from '../utils/settings';
+import {
+  DEFAULT_TMDB_KEY_MASK,
+  MAX_APP_NAME_LENGTH,
+  isUsingDefaultTmdbApiKey,
+  truncateAppName,
+} from '../utils/settings';
 
 export interface Settings {
   accentColor: string;
@@ -18,6 +23,7 @@ export interface Settings {
   compactLibraryButton: boolean;
   appIcon: 'default' | 'alternate';
   autoSyncLibrary: boolean;
+  customTmdbApiKey: string;
 }
 
 const RECENT_COLORS = ['#003e8f', '#bc13fe', '#E50914', '#555555', '#7b4cff'];
@@ -43,8 +49,16 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
     compactLibraryButton: currentSettings.compactLibraryButton ?? false,
     appIcon: currentSettings.appIcon ?? 'default',
     autoSyncLibrary: currentSettings.autoSyncLibrary ?? true,
+    customTmdbApiKey: currentSettings.customTmdbApiKey ?? '',
   });
   const [activeTab, setActiveTab] = useState<'general' | 'library' | 'personalization' | 'profiles' | 'advanced'>(initialTab);
+  const [isDefaultTmdbKeyMode, setIsDefaultTmdbKeyMode] = useState(
+    isUsingDefaultTmdbApiKey(currentSettings.customTmdbApiKey),
+  );
+  const [tmdbKeyInput, setTmdbKeyInput] = useState(
+    currentSettings.customTmdbApiKey?.trim() || DEFAULT_TMDB_KEY_MASK,
+  );
+  const [tmdbKeyError, setTmdbKeyError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
   const [showAvatarGrid, setShowAvatarGrid] = useState(false);
@@ -70,11 +84,50 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
     window.electronAPI?.setAppIcon?.(variant);
   };
 
-  const handleSave = () => {
-    const next = { ...settings, appName: truncateAppName(settings.appName) };
+  const handleSave = async () => {
+    const customTmdbApiKey =
+      isDefaultTmdbKeyMode || !tmdbKeyInput.trim() || tmdbKeyInput === DEFAULT_TMDB_KEY_MASK
+        ? ''
+        : tmdbKeyInput.trim();
+
+    const next = {
+      ...settings,
+      appName: truncateAppName(settings.appName),
+      customTmdbApiKey,
+    };
+
+    if (customTmdbApiKey && navigator.onLine) {
+      try {
+        const res = await fetch(
+          `https://api.themoviedb.org/3/configuration?api_key=${encodeURIComponent(customTmdbApiKey)}`,
+        );
+        if (res.status === 401) {
+          setTmdbKeyError('Invalid API key. Check your key at themoviedb.org');
+          return;
+        }
+      } catch {
+        // offline, allow save
+      }
+    }
+
+    setTmdbKeyError(null);
     applyAppIcon(next.appIcon ?? 'default');
     onSave(next);
     onClose();
+  };
+
+  const handleTmdbKeyFocus = () => {
+    if (isDefaultTmdbKeyMode) {
+      setIsDefaultTmdbKeyMode(false);
+      setTmdbKeyInput('');
+    }
+  };
+
+  const handleResetTmdbKey = () => {
+    setIsDefaultTmdbKeyMode(true);
+    setTmdbKeyInput(DEFAULT_TMDB_KEY_MASK);
+    setTmdbKeyError(null);
+    setSettings({ ...settings, customTmdbApiKey: '' });
   };
 
   const pickWallpaper = async () => {
@@ -569,6 +622,54 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
           {activeTab === 'advanced' && (
             <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-300">
               <h3 className="text-xl font-bold text-white mb-6">Advanced Settings</h3>
+
+              <div className="space-y-3">
+                <label className="block text-sm font-bold text-white">TMDB API Key</label>
+                <input
+                  type={isDefaultTmdbKeyMode && !settings.customTmdbApiKey.trim() ? 'password' : 'text'}
+                  value={tmdbKeyInput}
+                  onFocus={handleTmdbKeyFocus}
+                  onChange={(e) => {
+                    setTmdbKeyInput(e.target.value);
+                    setTmdbKeyError(null);
+                    if (e.target.value.trim() && e.target.value !== DEFAULT_TMDB_KEY_MASK) {
+                      setIsDefaultTmdbKeyMode(false);
+                    }
+                  }}
+                  className="w-full bg-black/50 border border-gray-700 rounded-lg px-4 py-2 text-sm text-white outline-none focus:border-accent transition font-mono"
+                  placeholder="Enter your TMDB API key"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <p className="text-xs text-gray-500">
+                  Used for posters, descriptions, and episode info. Get a free key at{' '}
+                  <a
+                    href="https://www.themoviedb.org/settings/api"
+                    className="text-gray-400 hover:text-white underline"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    themoviedb.org/settings/api
+                  </a>
+                  .
+                  {isUsingDefaultTmdbApiKey(settings.customTmdbApiKey) && isDefaultTmdbKeyMode && (
+                    <>
+                      <br />
+                      <span className="text-gray-400 italic">Currently using built-in default key.</span>
+                    </>
+                  )}
+                </p>
+           
+                {tmdbKeyError && <p className="text-xs text-red-400">{tmdbKeyError}</p>}
+                <button
+                  type="button"
+                  onClick={handleResetTmdbKey}
+                  disabled={isUsingDefaultTmdbApiKey(settings.customTmdbApiKey) && isDefaultTmdbKeyMode}
+                  className="text-sm text-gray-400 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition font-semibold"
+                >
+                  Reset to default
+                </button>
+              </div>
 
               <div>
                 <div className="flex items-center gap-3 mb-4 bg-gray-800/30 p-4 rounded-lg border border-gray-800 cursor-pointer hover:bg-gray-800/50 transition"

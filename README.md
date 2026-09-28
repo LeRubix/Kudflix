@@ -70,10 +70,13 @@ npm start
 
 ### Building for Production
 ```bash
-# Build the React app and package it into a portable Windows executable
+# Download and bundle mpv (required once, or after cleaning electron/bin/mpv)
+npm run setup-mpv
+
+# Build the React app and package it into a Windows NSIS installer
 npm run package
 ```
-The final `.exe` will be located in the `release` folder.
+The installer will be located in the `release_kudflix` folder (one level above the project directory).
 
 ## License
 

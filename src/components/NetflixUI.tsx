@@ -2,8 +2,18 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Play, Plus, ChevronLeft, ChevronRight, X, Edit2, Save, Shuffle, FolderOpen } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getTMDBMetadata, type TMDBResult } from '../utils/tmdb';
-import type { MediaOverride } from '../utils/mediaOverrides';
+import {
+  formatTmdbGenres,
+  getCachedEpisodeMeta,
+  parseSeasonEpisode,
+  prefetchEpisodeMetaBatch,
+  tmdbArtwork,
+  tmdbMatchLabel,
+  type TMDBEpisodeMeta,
+} from '../utils/tmdb';
+import { useTMDB } from '../hooks/useTMDB';
+import { useTMDBDetails } from '../hooks/useTMDBDetails';
+import { getMediaOverride, isTmdbDisabled, type MediaOverride } from '../utils/mediaOverrides';
 import { useImageBrightness } from '../hooks/useImageBrightness';
 import { EpisodeRow } from './EpisodeRow';
 import { cardProgress, resolvePlayTarget } from '../utils/grouping';
@@ -26,6 +36,7 @@ export interface LocalFile {
   isFolder?: boolean;
   folderFiles?: LocalFile[];
   resumeEpisode?: LocalFile;
+  tmdbDisabled?: boolean;
 }
 
 function getDisplayTitle(video: LocalFile) {
@@ -66,7 +77,7 @@ function ThumbnailTitle({ title, imageSrc, className = '' }: { title: string; im
 }
 
 // --- Grid View Modal ---
-type GridSort = 'az' | 'za' | 'year-new' | 'year-old' | 'recent';
+type GridSort = 'az' | 'za' | 'year-new' | 'year-old' | 'recent' | 'duration-short' | 'duration-long';
 
 function getSortTitle(video: LocalFile) {
   return (video.meta?.title || video.name).toLowerCase();
@@ -75,6 +86,13 @@ function getSortTitle(video: LocalFile) {
 function getSortYear(video: LocalFile) {
   const y = video.meta?.year;
   return y ? parseInt(y, 10) || 0 : 0;
+}
+
+function getSortDuration(video: LocalFile): number {
+  if (video.isFolder && video.folderFiles?.length) {
+    return video.folderFiles.reduce((sum, ep) => sum + (ep.duration ?? 0), 0);
+  }
+  return video.duration ?? 0;
 }
 
 export function GridViewModal({
@@ -112,6 +130,10 @@ export function GridViewModal({
         return list.sort((a, b) => getSortYear(a) - getSortYear(b));
       case 'recent':
         return list.sort((a, b) => (b.dateModified ?? 0) - (a.dateModified ?? 0));
+      case 'duration-short':
+        return list.sort((a, b) => getSortDuration(a) - getSortDuration(b));
+      case 'duration-long':
+        return list.sort((a, b) => getSortDuration(b) - getSortDuration(a));
       default:
         return list;
     }
@@ -169,6 +191,8 @@ export function GridViewModal({
                   <option value="year-new">Newest year</option>
                   <option value="year-old">Oldest year</option>
                   <option value="recent">Recently added</option>
+                  <option value="duration-short">Shortest</option>
+                  <option value="duration-long">Longest</option>
                 </select>
               )}
               {showRandomPlay && (
@@ -183,16 +207,18 @@ export function GridViewModal({
           )}
 
           <div className="flex-1 overflow-y-auto px-10 pb-10">
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-16">
               {sortedVideos.map((video, i) => (
-                <VideoCard
-                  key={`${video.path}-${i}`}
-                  video={video}
-                  onPlay={(v) => { onClose(); onPlay(v); }}
-                  onInfo={(v) => { onClose(); onInfo(v); }}
-                  variant="grid"
-                  progress={cardProgress(video, progresses)}
-                />
+                <div key={`${video.path}-${i}`} className="relative hover:z-[600]">
+                  <VideoCard
+                    video={video}
+                    onPlay={(v) => { onClose(); onPlay(v); }}
+                    onInfo={(v) => { onClose(); onInfo(v); }}
+                    variant="grid"
+                    enableHoverExpansion
+                    progress={cardProgress(video, progresses)}
+                  />
+                </div>
               ))}
             </div>
           </div>
@@ -215,13 +241,15 @@ export function DetailModal({
   onPlay: (v: LocalFile) => void;
   onUpdate?: (path: string, override: MediaOverride) => void;
 }) {
-  const [tmdb, setTmdb] = useState<TMDBResult | null>(null);
+  const useLocalOnly = isTmdbDisabled(video);
+  const tmdb = useTMDBDetails(video);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState({
     title: video.meta?.title || video.name,
     description: video.meta?.description || '',
     genre: video.meta?.genre || '',
     year: video.meta?.year || '',
+    disableTmdb: getMediaOverride(video.path)?.disableTmdb ?? false,
   });
 
   useEffect(() => {
@@ -230,9 +258,10 @@ export function DetailModal({
       description: video.meta?.description || '',
       genre: video.meta?.genre || '',
       year: video.meta?.year || '',
+      disableTmdb: getMediaOverride(video.path)?.disableTmdb ?? false,
     });
     setIsEditing(false);
-  }, [video.path, video.meta?.title, video.meta?.description, video.meta?.genre, video.meta?.year, video.name]);
+  }, [video.path, video.meta?.title, video.meta?.description, video.meta?.genre, video.meta?.year, video.name, video.tmdbDisabled]);
 
   const handleSaveEdits = () => {
     const override: MediaOverride = {
@@ -240,28 +269,16 @@ export function DetailModal({
       description: editForm.description.trim() || undefined,
       genre: editForm.genre.trim() || undefined,
       year: editForm.year.trim() || undefined,
+      disableTmdb: editForm.disableTmdb,
     };
     onUpdate?.(video.path, override);
     setIsEditing(false);
   };
 
-  // Prevent scrolling on body when modal is open
   useEffect(() => {
     document.body.style.overflow = 'hidden';
-    
-    // Fetch TMDB
-    let title = video.meta?.title || video.name;
-    if (video.relativePath) {
-      // Use the root folder name for series if it's nested
-      title = video.relativePath.split('/')[0];
-    }
-    
-    getTMDBMetadata(title).then(res => {
-      if (res) setTmdb(res);
-    });
-
     return () => { document.body.style.overflow = 'auto'; };
-  }, [video]);
+  }, []);
 
   const [selectedSubfolder, setSelectedSubfolder] = useState<string>('');
 
@@ -289,8 +306,51 @@ export function DetailModal({
   }, [subfolderNames, selectedSubfolder]);
 
   const episodesToRender = subfolders[selectedSubfolder] || [];
+  const episodePathsKey = episodesToRender.map((ep) => ep.path).join('\0');
   const episodeCount = video.folderFiles?.length ?? 0;
+  const heroArtwork = useLocalOnly ? tmdbArtwork(null, video) : tmdbArtwork(tmdb, video);
   const totalRuntime = video.folderFiles?.reduce((sum, ep) => sum + (ep.duration ?? 0), 0) ?? 0;
+  const [episodeMetaMap, setEpisodeMetaMap] = useState<Record<string, TMDBEpisodeMeta | null>>({});
+
+  useEffect(() => {
+    if (!video.isFolder || useLocalOnly || !tmdb?.tvId || episodesToRender.length === 0) {
+      setEpisodeMetaMap({});
+      return;
+    }
+
+    const parsedEpisodes = episodesToRender
+      .map((ep) => {
+        const parsed = parseSeasonEpisode(ep.name) || parseSeasonEpisode(ep.relativePath || '');
+        return parsed ? { ep, parsed } : null;
+      })
+      .filter((item): item is { ep: LocalFile; parsed: { season: number; episode: number } } => item !== null);
+
+    if (parsedEpisodes.length === 0) {
+      setEpisodeMetaMap({});
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      await prefetchEpisodeMetaBatch(
+        tmdb.tvId!,
+        parsedEpisodes.map((item) => item.parsed),
+      );
+      if (cancelled) return;
+
+      const map: Record<string, TMDBEpisodeMeta | null> = {};
+      for (const { ep, parsed } of parsedEpisodes) {
+        const cached = getCachedEpisodeMeta(tmdb.tvId!, parsed.season, parsed.episode);
+        if (cached !== undefined) map[ep.path] = cached;
+      }
+      setEpisodeMetaMap(map);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [video.path, tmdb?.tvId, useLocalOnly, selectedSubfolder, episodePathsKey]);
 
   return (
     <AnimatePresence>
@@ -321,10 +381,8 @@ export function DetailModal({
 
           {/* Hero Image */}
           <div className="relative w-full aspect-[16/7]">
-            {video.isFolder && tmdb?.backdrop ? (
-              <img src={tmdb.backdrop} alt="Backdrop" className="w-full h-full object-cover" />
-            ) : video.thumbnail ? (
-              <img src={video.thumbnail} alt={video.meta?.title || video.name} className="w-full h-full object-cover" />
+            {heroArtwork ? (
+              <img src={heroArtwork} alt={video.meta?.title || video.name} className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full bg-gradient-to-br from-gray-800 to-black" />
             )}
@@ -360,9 +418,11 @@ export function DetailModal({
           <div className="p-10 flex flex-col md:flex-row gap-12">
             <div className="flex-1">
               <div className="flex items-center gap-3 text-sm text-gray-400 font-semibold mb-6 flex-wrap">
-                <span className="text-green-400">{tmdb?.rating ? `${Math.round(tmdb.rating * 10)}% Match` : '98% Match'}</span>
-                {(video.meta?.year || tmdb?.year) && (
-                  <span>{video.meta?.year || tmdb?.year}</span>
+                {!useLocalOnly && tmdb && (
+                  <span className="text-green-400">{tmdbMatchLabel(tmdb)}</span>
+                )}
+                {(video.meta?.year || (!useLocalOnly && tmdb?.year)) && (
+                  <span>{video.meta?.year || (!useLocalOnly ? tmdb?.year : undefined)}</span>
                 )}
                 {video.isFolder && episodeCount > 0 && (
                   <span>{episodeCount} {episodeCount === 1 ? 'Episode' : 'Episodes'}</span>
@@ -414,6 +474,17 @@ export function DetailModal({
                       />
                     </div>
                   </div>
+                  <label className="flex items-center gap-3 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={editForm.disableTmdb}
+                      onChange={(e) => setEditForm({ ...editForm, disableTmdb: e.target.checked })}
+                      className="w-4 h-4 rounded border-gray-600 bg-black/50 accent-accent"
+                    />
+                    <span className="text-sm text-gray-300">
+                      Use local info only <span className="text-gray-500">(disable TMDB metadata)</span>
+                    </span>
+                  </label>
                   <button
                     onClick={handleSaveEdits}
                     className="flex items-center gap-2 bg-accent text-white px-6 py-2 rounded font-bold hover:opacity-90 transition"
@@ -423,7 +494,7 @@ export function DetailModal({
                 </div>
               ) : (
                 <p className="text-gray-200 leading-relaxed text-lg mb-8">
-                  {tmdb?.synopsis || video.meta?.description || 'No description available for this local file. This file was automatically indexed from your local folders.'}
+                  {(useLocalOnly ? video.meta?.description : (tmdb?.synopsis || video.meta?.description)) || 'No description available for this local file. This file was automatically indexed from your local folders.'}
                 </p>
               )}
 
@@ -446,7 +517,14 @@ export function DetailModal({
                   
                     <div className="space-y-4 max-h-[400px] overflow-y-auto pr-4 scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent">
                       {episodesToRender.map((ep, i) => (
-                        <EpisodeRow key={ep.path} ep={ep} index={i} seriesTvId={tmdb?.tvId} onPlay={onPlay} />
+                        <EpisodeRow
+                          key={ep.path}
+                          ep={ep}
+                          index={i}
+                          seriesTvId={useLocalOnly ? undefined : tmdb?.tvId}
+                          episodeMeta={episodeMetaMap[ep.path]}
+                          onPlay={onPlay}
+                        />
                       ))}
                     </div>
                 </div>
@@ -473,16 +551,44 @@ export function DetailModal({
                   )}
                 </div>
               </div>
-              <div>
-                <span className="text-gray-500 block mb-1">Genres:</span>
-                <span className="text-gray-300">
-                  {video.meta?.genre || (video.isFolder ? 'Series' : 'Local Media')}
-                </span>
-              </div>
-              {video.meta?.year && (
+              {(formatTmdbGenres(useLocalOnly ? null : tmdb, video.meta?.genre) ||
+                (video.isFolder ? 'Series' : 'Local Media')) && (
+                <div>
+                  <span className="text-gray-500 block mb-1">Genres:</span>
+                  <span className="text-gray-300">
+                    {formatTmdbGenres(useLocalOnly ? null : tmdb, video.meta?.genre) ||
+                      (video.isFolder ? 'Series' : 'Local Media')}
+                  </span>
+                </div>
+              )}
+              {!useLocalOnly && !video.isFolder && tmdb?.director && (
+                <div>
+                  <span className="text-gray-500 block mb-1">Director:</span>
+                  <span className="text-gray-300">{tmdb.director}</span>
+                </div>
+              )}
+              {!useLocalOnly && video.isFolder && tmdb?.creators && tmdb.creators.length > 0 && (
+                <div>
+                  <span className="text-gray-500 block mb-1">Created by:</span>
+                  <span className="text-gray-300">{tmdb.creators.join(', ')}</span>
+                </div>
+              )}
+              {!useLocalOnly && tmdb?.cast && tmdb.cast.length > 0 && (
+                <div>
+                  <span className="text-gray-500 block mb-1">Cast:</span>
+                  <span className="text-gray-300">{tmdb.cast.join(', ')}</span>
+                </div>
+              )}
+              {(video.meta?.year || (!useLocalOnly && tmdb?.year)) && (
                 <div>
                   <span className="text-gray-500 block mb-1">Year:</span>
-                  <span className="text-gray-300">{video.meta.year}</span>
+                  <span className="text-gray-300">{video.meta?.year || tmdb?.year}</span>
+                </div>
+              )}
+              {!useLocalOnly && video.isFolder && tmdb?.seasons != null && tmdb.seasons > 0 && (
+                <div>
+                  <span className="text-gray-500 block mb-1">Seasons:</span>
+                  <span className="text-gray-300">{tmdb.seasons}</span>
                 </div>
               )}
               {video.isFolder && totalRuntime > 0 && (
@@ -491,10 +597,16 @@ export function DetailModal({
                   <span className="text-gray-300">{formatDurationShort(totalRuntime)}</span>
                 </div>
               )}
-              {!video.isFolder && video.duration != null && video.duration > 0 && (
+              {!video.isFolder && (
                 <div>
                   <span className="text-gray-500 block mb-1">Runtime:</span>
-                  <span className="text-gray-300">{formatDurationShort(video.duration)}</span>
+                  <span className="text-gray-300">
+                    {video.duration != null && video.duration > 0
+                      ? formatDurationShort(video.duration)
+                      : !useLocalOnly && tmdb?.runtimeMinutes
+                        ? formatDurationShort(tmdb.runtimeMinutes * 60)
+                        : '—'}
+                  </span>
                 </div>
               )}
             </div>
@@ -512,48 +624,41 @@ export function VideoCard({
   onInfo,
   progress,
   variant = 'carousel',
+  enableHoverExpansion = false,
 }: {
   video: LocalFile;
   onPlay: (v: LocalFile) => void;
   onInfo: (v: LocalFile) => void;
   progress?: number;
   variant?: 'carousel' | 'grid';
+  enableHoverExpansion?: boolean;
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const hoverTimeoutRef = useRef<number | null>(null);
-  const [tmdb, setTmdb] = useState<TMDBResult | null>(null);
-
-  useEffect(() => {
-    let title = video.meta?.title || video.name;
-    if (video.relativePath) {
-      title = video.relativePath.split('/')[0];
-    }
-    getTMDBMetadata(title).then(res => {
-      if (res) setTmdb(res);
-    });
-  }, [video]);
+  const useLocalOnly = isTmdbDisabled(video);
+  const tmdb = useTMDB(video);
 
   const isGrid = variant === 'grid';
-  const cardImageSrc =
-    video.isFolder && tmdb?.backdrop
-      ? tmdb.backdrop
-      : video.thumbnail || video.localFanart || video.localPoster || undefined;
+  const allowHover = !isGrid || enableHoverExpansion;
+  const cardImageSrc = useLocalOnly ? tmdbArtwork(null, video) : tmdbArtwork(tmdb, video);
 
   const playTarget = resolvePlayTarget(video);
   const useStaticPreview = video.isFolder && !video.resumeEpisode;
 
   const handleMouseEnter = () => {
-    if (isGrid) return;
+    if (!allowHover) return;
     hoverTimeoutRef.current = window.setTimeout(() => {
       setIsHovered(true);
     }, 400);
   };
 
   const handleMouseLeave = () => {
-    if (isGrid) return;
+    if (!allowHover) return;
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     setIsHovered(false);
   };
+
+  const folderTotalRuntime = video.folderFiles?.reduce((sum, ep) => sum + (ep.duration ?? 0), 0) ?? 0;
 
   return (
     <div 
@@ -570,10 +675,8 @@ export function VideoCard({
     >
       {/* Base Card (Underneath) */}
       <div className="w-full h-full bg-gray-800 rounded-md overflow-hidden relative">
-        {video.isFolder && tmdb?.backdrop ? (
-          <img src={tmdb.backdrop} alt="Backdrop" className="w-full h-full object-cover" />
-        ) : video.thumbnail ? (
-          <img src={video.thumbnail} alt={video.meta?.title || video.name} className="w-full h-full object-cover" />
+        {cardImageSrc ? (
+          <img src={cardImageSrc} alt={video.meta?.title || video.name} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full bg-gray-700 flex items-center justify-center p-4 text-center font-bebas text-gray-300">
             {getDisplayTitle(video)}
@@ -588,22 +691,26 @@ export function VideoCard({
         )}
       </div>
 
-      {/* Expanded Hover Card (Jawlet), carousel only */}
+      {/* Expanded Hover Card (Jawlet) */}
       <AnimatePresence>
-        {!isGrid && isHovered && (
+        {allowHover && isHovered && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1.3 }}
+            animate={{ opacity: 1, scale: isGrid ? 1.15 : 1.3 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.2 }}
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[25%] w-full bg-[#181818] rounded-md shadow-[0_10px_40px_rgba(0,0,0,0.8)] z-[100] overflow-hidden border border-gray-700/50"
-            style={{ transformOrigin: 'bottom center' }}
+            className={
+              isGrid
+                ? 'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[115%] bg-[#181818] rounded-md shadow-[0_10px_40px_rgba(0,0,0,0.9)] z-[600] overflow-hidden border border-gray-700/50'
+                : 'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[25%] w-full bg-[#181818] rounded-md shadow-[0_10px_40px_rgba(0,0,0,0.8)] z-[100] overflow-hidden border border-gray-700/50'
+            }
+            style={{ transformOrigin: isGrid ? 'center center' : 'bottom center' }}
           >
             <div className="w-full aspect-video relative cursor-pointer" onClick={(e) => { e.stopPropagation(); onPlay(playTarget); }}>
               {useStaticPreview ? (
-                tmdb?.backdrop || video.thumbnail ? (
+                (!useLocalOnly && tmdb?.backdrop) || video.thumbnail ? (
                   <img
-                    src={tmdb?.backdrop || video.thumbnail}
+                    src={(!useLocalOnly && tmdb?.backdrop) || video.thumbnail || ''}
                     alt=""
                     className="w-full h-full object-cover"
                   />
@@ -647,12 +754,17 @@ export function VideoCard({
               </div>
 
               <div className="flex items-center gap-2 text-xs text-white font-semibold flex-wrap">
-                {!video.isFolder && <span className="text-green-400">98% Match</span>}
-                {(video.meta?.year || tmdb?.year) && (
-                  <span className="text-gray-400">{video.meta?.year || tmdb?.year}</span>
+                {!useLocalOnly && tmdb && (
+                  <span className="text-green-400">{tmdbMatchLabel(tmdb)}</span>
+                )}
+                {(video.meta?.year || (!useLocalOnly && tmdb?.year)) && (
+                  <span className="text-gray-400">{video.meta?.year || (!useLocalOnly ? tmdb?.year : undefined)}</span>
                 )}
                 {video.isFolder && video.folderFiles && video.folderFiles.length > 0 && (
                   <span className="text-gray-400">{video.folderFiles.length} Episodes</span>
+                )}
+                {video.isFolder && folderTotalRuntime > 0 && (
+                  <span className="text-gray-400">{formatDurationShort(folderTotalRuntime)}</span>
                 )}
                 {!video.isFolder && video.duration != null && video.duration > 0 && (
                   <span className="text-gray-400">{formatDurationShort(video.duration)}</span>
@@ -662,9 +774,9 @@ export function VideoCard({
               <div className="text-xs text-white font-bold line-clamp-2">
                 {getDisplayTitle(video)}
               </div>
-              {(video.meta?.genre || tmdb?.synopsis) && (
-                <div className="text-xs text-gray-400 line-clamp-2">
-                  {video.meta?.genre || tmdb?.synopsis}
+              {(video.meta?.genre || (!useLocalOnly && tmdb?.synopsis) || video.meta?.description) && (
+                <div className="text-xs text-gray-400 line-clamp-3">
+                  {(useLocalOnly ? video.meta?.description : (tmdb?.synopsis || video.meta?.description)) || video.meta?.genre}
                 </div>
               )}
             </div>

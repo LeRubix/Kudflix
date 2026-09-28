@@ -1,6 +1,31 @@
 import type { Settings } from '../components/SettingsModal';
 
 export const MAX_APP_NAME_LENGTH = 50;
+export const DEFAULT_TMDB_API_KEY = '4f9f2f84e320ca3494c1fe586f3a5318';
+export const DEFAULT_TMDB_KEY_MASK = '••••••••••••••••••••••••••••••••';
+
+export function isUsingDefaultTmdbApiKey(customKey?: string): boolean {
+  return !customKey?.trim();
+}
+
+export function getEffectiveTmdbApiKey(customKey?: string): string {
+  const key = customKey?.trim();
+  return key || DEFAULT_TMDB_API_KEY;
+}
+
+/** Read the active TMDB key from persisted settings. */
+export function getActiveTmdbApiKey(): string {
+  try {
+    const saved = localStorage.getItem('netflix_settings');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return getEffectiveTmdbApiKey(parsed.customTmdbApiKey);
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_TMDB_API_KEY;
+}
 
 export function truncateAppName(name: string): string {
   return name.slice(0, MAX_APP_NAME_LENGTH);
@@ -21,6 +46,7 @@ const DEFAULT_SETTINGS: Settings = {
   compactLibraryButton: false,
   appIcon: 'default' as const,
   autoSyncLibrary: true,
+  customTmdbApiKey: '',
 };
 
 export function loadSettings(): Settings {
@@ -51,6 +77,7 @@ export function loadSettings(): Settings {
         compactLibraryButton: parsed.compactLibraryButton ?? DEFAULT_SETTINGS.compactLibraryButton,
         appIcon: parsed.appIcon === 'alternate' ? 'alternate' : 'default',
         autoSyncLibrary: parsed.autoSyncLibrary ?? DEFAULT_SETTINGS.autoSyncLibrary,
+        customTmdbApiKey: parsed.customTmdbApiKey ?? '',
       };
     }
 

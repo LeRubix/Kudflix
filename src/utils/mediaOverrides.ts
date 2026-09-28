@@ -5,6 +5,7 @@ export interface MediaOverride {
   description?: string;
   genre?: string;
   year?: string;
+  disableTmdb?: boolean;
 }
 
 const STORAGE_KEY = 'netflix_media_overrides';
@@ -28,12 +29,18 @@ export function saveMediaOverride(path: string, override: MediaOverride): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
 }
 
+export function isTmdbDisabled(video: Pick<LocalFile, 'path'> | null | undefined): boolean {
+  if (!video) return false;
+  return getMediaOverride(video.path)?.disableTmdb === true;
+}
+
 export function applyMediaOverride(file: LocalFile): LocalFile {
   const override = getMediaOverride(file.path);
   if (!override) return file;
 
   return {
     ...file,
+    tmdbDisabled: override.disableTmdb === true,
     meta: {
       ...file.meta,
       title: override.title ?? file.meta?.title,
@@ -46,7 +53,7 @@ export function applyMediaOverride(file: LocalFile): LocalFile {
 
 export function mergeOverrideIntoMeta(
   meta: { title: string; description: string; poster: string | null; year: string; genre: string },
-  path: string
+  path: string,
 ) {
   const override = getMediaOverride(path);
   if (!override) return meta;

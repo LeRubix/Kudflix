@@ -20,9 +20,18 @@ import {
   buildTop10,
   buildSearchCatalog,
   buildHeroCatalog,
-  buildCollections,
+  buildGenreRows,
   resolvePlayTarget,
 } from './utils/grouping';
+import {
+  clearTmdbCaches,
+  invalidateTmdbSession,
+  prefetchTMDBCatalog,
+  prefetchTMDBDetailsCatalog,
+  tmdbArtwork,
+} from './utils/tmdb';
+import { useTMDB } from './hooks/useTMDB';
+import { isTmdbDisabled } from './utils/mediaOverrides';
 
 export default function App() {
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
@@ -43,12 +52,15 @@ export default function App() {
   const [settings, setSettings] = useState(loadSettings);
 
   const enrichGenRef = useRef(0);
+  const tmdbPrefetchGenRef = useRef(0);
+  const prevTmdbKeyRef = useRef(settings.customTmdbApiKey);
   const activeProfileRef = useRef(activeProfile);
   const filesRef = useRef(files);
   activeProfileRef.current = activeProfile;
   filesRef.current = files;
   const [progresses, setProgresses] = useState<Record<string, number>>({});
   const [overrideTick, setOverrideTick] = useState(0);
+  const [tmdbCacheTick, setTmdbCacheTick] = useState(0);
 
   const getInProgressPaths = (profileId: string | null): Set<string> => {
     if (!profileId) return new Set();
@@ -135,6 +147,13 @@ export default function App() {
       document.documentElement.style.removeProperty('--theme-wallpaper');
     }
     
+    if (prevTmdbKeyRef.current !== settings.customTmdbApiKey) {
+      clearTmdbCaches();
+      invalidateTmdbSession();
+      setTmdbCacheTick((t) => t + 1);
+      prevTmdbKeyRef.current = settings.customTmdbApiKey;
+    }
+
     saveSettings(settings);
     window.electronAPI?.setAppIcon?.(settings.appIcon ?? 'default');
   }, [settings]);
@@ -149,32 +168,8 @@ export default function App() {
   const handleUpdateVideo = (path: string, override: MediaOverride) => {
     saveMediaOverride(path, override);
     setOverrideTick((t) => t + 1);
-    setFiles(prev => prev.map(f => {
-      if (f.path !== path) return f;
-      return applyMediaOverride({
-        ...f,
-        meta: {
-          title: override.title ?? f.meta?.title ?? f.name,
-          description: override.description ?? f.meta?.description ?? '',
-          poster: f.meta?.poster ?? null,
-          year: override.year ?? f.meta?.year ?? '',
-          genre: override.genre ?? f.meta?.genre ?? '',
-        },
-      });
-    }));
-    setInfoVideo(prev => {
-      if (!prev || prev.path !== path) return prev;
-      return applyMediaOverride({
-        ...prev,
-        meta: {
-          title: override.title ?? prev.meta?.title ?? prev.name,
-          description: override.description ?? prev.meta?.description ?? '',
-          poster: prev.meta?.poster ?? null,
-          year: override.year ?? prev.meta?.year ?? '',
-          genre: override.genre ?? prev.meta?.genre ?? '',
-        },
-      });
-    });
+    setFiles((prev) => prev.map((f) => (f.path === path ? applyMediaOverride(f) : f)));
+    setInfoVideo((prev) => (prev?.path === path ? applyMediaOverride(prev) : prev));
   };
 
   const scanLibrary = useCallback(async (incremental = false) => {
@@ -371,7 +366,8 @@ export default function App() {
     continueWatchingAll,
     continueWatchingMovies,
     continueWatchingTv,
-    collections,
+    movieGenreRows,
+    tvGenreRows,
     searchCatalog,
     heroCatalog,
   } = useMemo(() => {
@@ -384,7 +380,8 @@ export default function App() {
     const continueWatchingMovies = buildContinueWatchingMovies(movies, progresses);
     const continueWatchingTv = buildContinueWatchingSeries(shows, progresses, folders);
     const continueWatchingAll = buildContinueWatchingAll(movies, shows, progresses, folders);
-    const collections = buildCollections(movies);
+    const movieGenreRows = buildGenreRows(movies);
+    const tvGenreRows = buildGenreRows(folders);
     const searchCatalog = buildSearchCatalog(movies, folders);
     const heroCatalog = buildHeroCatalog(movies, folders);
 
@@ -395,11 +392,12 @@ export default function App() {
       continueWatchingAll,
       continueWatchingMovies,
       continueWatchingTv,
-      collections,
+      movieGenreRows,
+      tvGenreRows,
       searchCatalog,
       heroCatalog,
     };
-  }, [files, progresses, activeProfile, overrideTick]);
+  }, [files, progresses, activeProfile, overrideTick, tmdbCacheTick]);
 
   // Dynamic Hero Banner
   const [featuredIndex, setFeaturedIndex] = useState(0);
@@ -409,10 +407,34 @@ export default function App() {
   const heroVideoRef = useRef<HTMLVideoElement>(null);
   
   const featured = heroCatalog.length > 0 ? heroCatalog[featuredIndex % heroCatalog.length] : null;
+  const featuredLocalOnly = isTmdbDisabled(featured);
+  const featuredTmdb = useTMDB(featured);
   const featuredPlayTarget = featured ? resolvePlayTarget(featured) : null;
   const featuredImageSrc = featured
-    ? (featured.localFanart || featured.localPoster || featured.thumbnail)
+    ? (tmdbArtwork(featuredLocalOnly ? null : featuredTmdb, featured) || featured.localFanart || featured.localPoster || featured.thumbnail)
     : undefined;
+
+  useEffect(() => {
+    if (files.length === 0 || loading || librarySyncing) return;
+
+    const movies = files.filter((f) => f.category === 'movie');
+    const seriesFolders = buildSeriesFolders(files.filter((f) => f.category === 'tv'));
+    const priority = [...heroCatalog, ...top10, ...continueWatchingAll];
+    const gen = ++tmdbPrefetchGenRef.current;
+
+    const timer = setTimeout(async () => {
+      if (gen !== tmdbPrefetchGenRef.current) return;
+      prefetchTMDBCatalog([...movies, ...seriesFolders], priority, 80);
+      await new Promise((r) => setTimeout(r, 4000));
+      if (gen !== tmdbPrefetchGenRef.current) return;
+      await prefetchTMDBDetailsCatalog([...movies, ...seriesFolders], priority, 40);
+      if (gen === tmdbPrefetchGenRef.current) {
+        setTmdbCacheTick((t) => t + 1);
+      }
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [files.length, libraryFolderKey, loading, librarySyncing, heroCatalog, top10, continueWatchingAll]);
 
   // 1. Initial 3s delay on image
   useEffect(() => {
@@ -643,7 +665,7 @@ export default function App() {
                         {featured.meta?.title || featured.name}
                       </h1>
                       <p className="text-lg md:text-xl text-gray-200 mb-8 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] line-clamp-3 font-medium">
-                        {featured.meta?.description || 'A local media file from your personal collection.'}
+                        {(featuredLocalOnly ? featured.meta?.description : (featuredTmdb?.synopsis || featured.meta?.description)) || 'A local media file from your personal collection.'}
                       </p>
                       <div className="flex gap-4">
                         <button 
@@ -699,9 +721,29 @@ export default function App() {
             {(activeTab === 'home' || activeTab === 'movies') && movies.length > 0 && (
               <ContentRow title="Movies" videos={movies} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable />
             )}
-            
-            {collections.map(c => (
-              <ContentRow key={c.title} title={c.title} videos={c.videos} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} />
+
+            {activeTab === 'movies' && movieGenreRows.map((row) => (
+              <ContentRow
+                key={`movie-genre-${row.title}`}
+                title={row.title}
+                videos={row.videos}
+                onPlay={handlePlayVideo}
+                onInfo={setInfoVideo}
+                progresses={progresses}
+                expandable
+              />
+            ))}
+
+            {activeTab === 'tv' && tvGenreRows.map((row) => (
+              <ContentRow
+                key={`tv-genre-${row.title}`}
+                title={row.title}
+                videos={row.videos}
+                onPlay={handlePlayVideo}
+                onInfo={setInfoVideo}
+                progresses={progresses}
+                expandable
+              />
             ))}
           </div>
         </>

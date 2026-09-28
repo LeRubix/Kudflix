@@ -23,7 +23,7 @@ export function toBasicFile(file: ScannedFile, category: 'movie' | 'tv'): LocalF
   const cachedDuration = getCachedDuration(file.path) ?? 0;
   return applyMediaOverride({
     ...file,
-    meta: resolveFileMeta(file),
+    meta: resolveFileMeta(file, category),
     thumbnail: file.localFanart || file.localPoster || undefined,
     duration: cachedDuration,
     dateModified: file.mtimeMs ?? Date.now(),
@@ -71,7 +71,7 @@ export function buildOptimizedEnrichQueue(
 }
 
 async function enrichOne(file: ScannedFile, category: 'movie' | 'tv'): Promise<LocalFile> {
-  const meta = resolveFileMeta(file);
+  const meta = resolveFileMeta(file, category);
   let thumbnail = file.localFanart || file.localPoster || meta.poster || undefined;
   const skipThumbnail = !!(file.localPoster || file.localFanart);
 
