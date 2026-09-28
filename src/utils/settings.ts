@@ -1,7 +1,7 @@
 import type { Settings } from '../components/SettingsModal';
 
 const DEFAULT_SETTINGS: Settings = {
-  accentColor: '#fdbce6',
+  accentColor: '#E50914',
   wallpaperPath: '',
   overlayOpacity: 0.5,
   appName: 'Kudflix',
@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS: Settings = {
   tvFolders: [],
   skipProfilePicker: false,
   defaultProfileId: null,
+  compactLibraryButton: false,
 };
 
 export function loadSettings(): Settings {
@@ -25,8 +26,10 @@ export function loadSettings(): Settings {
         ? parsed.movieFolders
         : legacyLibrary ? [legacyLibrary] : [];
 
+      const accentColor = parsed.accentColor ?? DEFAULT_SETTINGS.accentColor;
+
       return {
-        accentColor: parsed.accentColor ?? DEFAULT_SETTINGS.accentColor,
+        accentColor: accentColor === '#cf3f4c' ? '#E50914' : accentColor,
         wallpaperPath: parsed.wallpaperPath ?? '',
         overlayOpacity: parsed.overlayOpacity ?? DEFAULT_SETTINGS.overlayOpacity,
         appName: parsed.appName ?? DEFAULT_SETTINGS.appName,
@@ -37,6 +40,7 @@ export function loadSettings(): Settings {
         tvFolders: parsed.tvFolders ?? [],
         skipProfilePicker: parsed.skipProfilePicker ?? false,
         defaultProfileId: parsed.defaultProfileId ?? null,
+        compactLibraryButton: parsed.compactLibraryButton ?? DEFAULT_SETTINGS.compactLibraryButton,
       };
     }
 

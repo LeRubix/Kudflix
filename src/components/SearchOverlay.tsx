@@ -2,8 +2,12 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Search, X, Play } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { LocalFile } from './NetflixUI';
+import { resolvePlayTarget } from '../utils/grouping';
 
 function getSearchText(file: LocalFile): string {
+  const episodeText = file.folderFiles
+    ? file.folderFiles.flatMap((ep) => [ep.name, ep.meta?.title, ep.relativePath]).filter(Boolean).join(' ')
+    : '';
   return [
     file.meta?.title,
     file.name,
@@ -12,6 +16,7 @@ function getSearchText(file: LocalFile): string {
     file.meta?.year,
     file.folderName,
     file.relativePath,
+    episodeText,
   ].filter(Boolean).join(' ').toLowerCase();
 }
 
@@ -83,14 +88,13 @@ export function SearchOverlay({
                   key={file.path}
                   onClick={() => {
                     onClose();
-                    if (file.isFolder) onInfo(file);
-                    else onInfo(file);
+                    onInfo(file);
                   }}
                   className="flex items-center gap-4 bg-[#181818] hover:bg-[#242424] rounded-lg p-3 text-left transition group"
                 >
                   <div className="w-28 aspect-video rounded overflow-hidden bg-gray-800 flex-shrink-0 relative">
-                    {file.thumbnail ? (
-                      <img src={file.thumbnail} alt="" className="w-full h-full object-cover" />
+                    {(file.thumbnail || file.localFanart || file.localPoster) ? (
+                      <img src={file.thumbnail || file.localFanart || file.localPoster || ''} alt="" className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-xs text-gray-500 p-2 text-center">
                         {file.meta?.title || file.name}
@@ -101,6 +105,9 @@ export function SearchOverlay({
                     <p className="text-white font-semibold truncate group-hover:text-accent transition">
                       {file.meta?.title || file.name}
                     </p>
+                    {file.isFolder && (
+                      <p className="text-gray-500 text-sm truncate">Series · {file.folderFiles?.length ?? 0} episodes</p>
+                    )}
                     {file.meta?.genre && (
                       <p className="text-gray-500 text-sm truncate">{file.meta.genre}</p>
                     )}
@@ -108,19 +115,17 @@ export function SearchOverlay({
                       <p className="text-gray-600 text-xs mt-0.5">{file.meta.year}</p>
                     )}
                   </div>
-                  {!file.isFolder && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onClose();
-                        onPlay(file);
-                      }}
-                      className="p-2 rounded-full bg-white/10 hover:bg-white text-white hover:text-black transition flex-shrink-0 opacity-0 group-hover:opacity-100"
-                      aria-label="Play"
-                    >
-                      <Play className="w-4 h-4 fill-current" />
-                    </button>
-                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClose();
+                      onPlay(resolvePlayTarget(file));
+                    }}
+                    className="p-2 rounded-full bg-white/10 hover:bg-white text-white hover:text-black transition flex-shrink-0 opacity-0 group-hover:opacity-100"
+                    aria-label="Play"
+                  >
+                    <Play className="w-4 h-4 fill-current" />
+                  </button>
                 </button>
               ))}
             </div>

@@ -14,9 +14,10 @@ export interface Settings {
   tvFolders: string[];
   skipProfilePicker: boolean;
   defaultProfileId: string | null;
+  compactLibraryButton: boolean;
 }
 
-const RECENT_COLORS = ['#003e8f', '#bc13fe', '#cf3f4c', '#555555', '#7b4cff'];
+const RECENT_COLORS = ['#003e8f', '#bc13fe', '#E50914', '#555555', '#7b4cff'];
 
 const AVATAR_OPTIONS = Array.from({ length: 9 }, (_, i) => `./avatars/key${i + 1}.jpg`);
 
@@ -33,6 +34,7 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
     tvFolders: currentSettings.tvFolders ?? [],
     skipProfilePicker: currentSettings.skipProfilePicker ?? false,
     defaultProfileId: currentSettings.defaultProfileId ?? null,
+    compactLibraryButton: currentSettings.compactLibraryButton ?? false,
   });
   const [activeTab, setActiveTab] = useState<'general' | 'library' | 'personalization' | 'profiles' | 'advanced'>(initialTab);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -165,6 +167,22 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                   onChange={(e) => setSettings({ ...settings, uiScale: parseFloat(e.target.value) })}
                   className="w-full accent-accent"
                 />
+              </div>
+
+              <div className="flex items-center justify-between bg-black/50 border border-gray-700 rounded-lg px-4 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-gray-300">Icon-only library button</p>
+                  <p className="text-xs text-gray-500 mt-1">Show Manage Library as a header icon like Search and Settings.</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.compactLibraryButton}
+                  onClick={() => setSettings({ ...settings, compactLibraryButton: !settings.compactLibraryButton })}
+                  className={`relative w-12 h-6 rounded-full transition ${settings.compactLibraryButton ? 'bg-accent' : 'bg-gray-600'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${settings.compactLibraryButton ? 'translate-x-6' : ''}`} />
+                </button>
               </div>
             </div>
           )}

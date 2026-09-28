@@ -1,6 +1,6 @@
 import { getCachedDuration, setCachedDuration } from './mediaCache';
 
-const MAX_THUMB_WIDTH = 320;
+const MAX_THUMB_WIDTH = 1280;
 const THUMB_TIMEOUT_MS = 12000;
 
 export async function generateVideoThumbnail(
@@ -61,7 +61,7 @@ export async function generateVideoThumbnail(
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(video, 0, 0, w, h);
-          finish({ thumbnail: canvas.toDataURL('image/jpeg', 0.55), duration: video.duration || 0 });
+          finish({ thumbnail: canvas.toDataURL('image/jpeg', 0.82), duration: video.duration || 0 });
         } else {
           finish({ thumbnail: null, duration: video.duration || 0 });
         }

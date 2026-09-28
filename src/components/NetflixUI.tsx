@@ -6,6 +6,7 @@ import { getTMDBMetadata, type TMDBResult } from '../utils/tmdb';
 import type { MediaOverride } from '../utils/mediaOverrides';
 import { useImageBrightness } from '../hooks/useImageBrightness';
 import { EpisodeRow } from './EpisodeRow';
+import { cardProgress, resolvePlayTarget } from '../utils/grouping';
 
 // --- Types ---
 export interface LocalFile {
@@ -23,6 +24,7 @@ export interface LocalFile {
   folderName?: string;
   isFolder?: boolean;
   folderFiles?: LocalFile[];
+  resumeEpisode?: LocalFile;
 }
 
 function getDisplayTitle(video: LocalFile) {
@@ -108,7 +110,7 @@ export function GridViewModal({
                   onPlay={(v) => { onClose(); onPlay(v); }}
                   onInfo={(v) => { onClose(); onInfo(v); }}
                   variant="grid"
-                  progress={progresses[video.path] !== undefined && video.duration ? progresses[video.path] / video.duration : 0}
+                  progress={cardProgress(video, progresses)}
                 />
               ))}
             </div>
@@ -152,7 +154,6 @@ export function DetailModal({
   }, [video.path, video.meta?.title, video.meta?.description, video.meta?.genre, video.meta?.year, video.name]);
 
   const handleSaveEdits = () => {
-    if (video.isFolder) return;
     const override: MediaOverride = {
       title: editForm.title.trim() || undefined,
       description: editForm.description.trim() || undefined,
@@ -260,7 +261,7 @@ export function DetailModal({
                 >
                   <Play className="w-6 h-6 fill-black" /> Play
                 </button>
-                {!video.isFolder && onUpdate && (
+                {onUpdate && (
                   <button
                     onClick={() => setIsEditing(!isEditing)}
                     className="flex items-center gap-2 bg-gray-600/80 text-white px-6 py-2 rounded font-bold hover:bg-gray-500/80 transition"
@@ -441,10 +442,10 @@ export function VideoCard({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onClick={() => {
-        if (video.isFolder) {
+        if (video.isFolder && !video.resumeEpisode) {
           onInfo(video);
         } else if (!isHovered) {
-          onPlay(video); // Quick click = play
+          onPlay(resolvePlayTarget(video));
         }
       }}
     >
@@ -479,9 +480,9 @@ export function VideoCard({
             className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[25%] w-full bg-[#181818] rounded-md shadow-[0_10px_40px_rgba(0,0,0,0.8)] z-[100] overflow-hidden border border-gray-700/50"
             style={{ transformOrigin: 'bottom center' }}
           >
-            <div className="w-full aspect-video relative cursor-pointer" onClick={(e) => { e.stopPropagation(); onPlay(video); }}>
+            <div className="w-full aspect-video relative cursor-pointer" onClick={(e) => { e.stopPropagation(); onPlay(resolvePlayTarget(video)); }}>
               <video 
-                src={`file:///${video.path.replace(/\\/g, '/')}`} 
+                src={`file:///${resolvePlayTarget(video).path.replace(/\\/g, '/')}`} 
                 autoPlay 
                 muted 
                 loop 
@@ -500,7 +501,7 @@ export function VideoCard({
             <div className="p-4 flex flex-col gap-3">
               <div className="flex justify-between items-center">
                 <div className="flex gap-2">
-                  <button onClick={(e) => { e.stopPropagation(); onPlay(video); }} className="w-8 h-8 bg-white rounded-full flex items-center justify-center hover:bg-gray-200 transition">
+                  <button onClick={(e) => { e.stopPropagation(); onPlay(resolvePlayTarget(video)); }} className="w-8 h-8 bg-white rounded-full flex items-center justify-center hover:bg-gray-200 transition">
                     <Play className="w-4 h-4 fill-black text-black ml-0.5" />
                   </button>
                   <button className="w-8 h-8 bg-transparent border-2 border-gray-500 rounded-full flex items-center justify-center hover:border-white transition text-white">
@@ -669,7 +670,7 @@ export function ContentRow({
                 className={isTop10 ? 'relative z-10 flex-shrink-0' : ''}
                 style={isTop10 ? { marginLeft: top10CardInset(rank) } : undefined}
               >
-                <VideoCard video={video} onPlay={onPlay} onInfo={onInfo} progress={progresses[video.path] !== undefined && video.duration ? progresses[video.path] / video.duration : 0} />
+                <VideoCard video={video} onPlay={onPlay} onInfo={onInfo} progress={cardProgress(video, progresses)} />
               </div>
             </div>
           );

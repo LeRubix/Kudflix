@@ -10,6 +10,17 @@ import { loadSettings, saveSettings } from './utils/settings';
 import { StartupScreen } from './components/StartupScreen';
 import { ProfilesScreen } from './components/ProfilesScreen';
 import { SearchOverlay } from './components/SearchOverlay';
+import {
+  buildSeriesFolders,
+  buildContinueWatchingAll,
+  buildContinueWatchingMovies,
+  buildContinueWatchingSeries,
+  buildTop10,
+  buildSearchCatalog,
+  buildHeroCatalog,
+  buildCollections,
+  resolvePlayTarget,
+} from './utils/grouping';
 
 export default function App() {
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
@@ -30,6 +41,7 @@ export default function App() {
 
   const enrichGenRef = useRef(0);
   const [progresses, setProgresses] = useState<Record<string, number>>({});
+  const [overrideTick, setOverrideTick] = useState(0);
 
   useEffect(() => {
     if (activeProfile) {
@@ -78,6 +90,7 @@ export default function App() {
 
   const handleUpdateVideo = (path: string, override: MediaOverride) => {
     saveMediaOverride(path, override);
+    setOverrideTick((t) => t + 1);
     setFiles(prev => prev.map(f => {
       if (f.path !== path) return f;
       return applyMediaOverride({
@@ -224,17 +237,18 @@ export default function App() {
   };
 
   const handlePlayVideo = (video: LocalFile) => {
+    const target = resolvePlayTarget(video);
     if (activeProfile) {
       const counts = JSON.parse(localStorage.getItem(`netflix_playcounts_${activeProfile}`) || '{}');
-      counts[video.path] = (counts[video.path] || 0) + 1;
+      counts[target.path] = (counts[target.path] || 0) + 1;
       localStorage.setItem(`netflix_playcounts_${activeProfile}`, JSON.stringify(counts));
     }
 
-    if (settings.useExternalPlayer && playInExternal(video)) return;
+    if (settings.useExternalPlayer && playInExternal(target)) return;
 
-    const session = buildSession(video);
+    const session = buildSession(target);
     if (!session || !window.electronAPI?.playerStart) return;
-    setPlayingVideo(video);
+    setPlayingVideo(target);
     window.electronAPI.playerStart(session);
   };
 
@@ -264,75 +278,42 @@ export default function App() {
   }, [activeProfile]);
 
   // Grouping for rows
-  const { shows, movies, continueWatching, top10, collections, folders } = useMemo(() => {
+  const {
+    movies,
+    folders,
+    top10,
+    continueWatchingAll,
+    continueWatchingMovies,
+    continueWatchingTv,
+    collections,
+    searchCatalog,
+    heroCatalog,
+  } = useMemo(() => {
     const shows = files.filter(f => f.category === 'tv');
     const movies = files.filter(f => f.category === 'movie');
+    const folders = buildSeriesFolders(shows);
 
-    // Continue Watching
-    const continueWatching = files.filter(f => progresses[f.path] && progresses[f.path] > 5 && (!f.duration || progresses[f.path] < f.duration - 30));
+    const playCounts = JSON.parse(localStorage.getItem(`netflix_playcounts_${activeProfile}`) || '{}');
+    const top10 = buildTop10(movies, shows, playCounts, folders);
+    const continueWatchingMovies = buildContinueWatchingMovies(movies, progresses);
+    const continueWatchingTv = buildContinueWatchingSeries(shows, progresses, folders);
+    const continueWatchingAll = buildContinueWatchingAll(movies, shows, progresses, folders);
+    const collections = buildCollections(movies);
+    const searchCatalog = buildSearchCatalog(movies, folders);
+    const heroCatalog = buildHeroCatalog(movies, folders);
 
-    // Top 10, most played only (no filler items)
-    const counts = JSON.parse(localStorage.getItem(`netflix_playcounts_${activeProfile}`) || '{}');
-    const top10 = [...files]
-      .filter(f => !f.isFolder && counts[f.path] > 0)
-      .sort((a, b) => (counts[b.path] || 0) - (counts[a.path] || 0))
-      .slice(0, 10);
-
-    // Smart Collections (by Genre and Folder)
-    const genreMap = new Map<string, LocalFile[]>();
-    const folderMap = new Map<string, LocalFile[]>();
-    const rootFolders = new Map<string, LocalFile[]>();
-
-    shows.forEach(f => {
-      if (f.relativePath) {
-        const parts = f.relativePath.split('/');
-        if (parts.length > 1) {
-          const root = parts[0];
-          if (!rootFolders.has(root)) rootFolders.set(root, []);
-          rootFolders.get(root)!.push(f);
-        }
-      }
-    });
-
-    const folderPseudoFiles: LocalFile[] = Array.from(rootFolders.entries()).map(([root, fList]) => ({
-      name: root,
-      path: `folder://${root}`,
-      isFolder: true,
-      folderFiles: fList.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })),
-      thumbnail: fList[0].thumbnail || fList[0].localFanart || fList[0].localPoster || undefined,
-      meta: {
-        title: root,
-        description: `A collection of ${fList.length} video files inside the ${root} folder.`,
-      },
-      dateModified: Date.now()
-    }));
-
-    movies.forEach(m => {
-      // Genre
-      const g = m.meta?.genre;
-      if (g && g !== 'Movie' && g !== 'Local Media') {
-        const primary = g.split(',')[0].trim();
-        if (!genreMap.has(primary)) genreMap.set(primary, []);
-        genreMap.get(primary)!.push(m);
-      }
-
-      // Folder (Franchise)
-      if (m.folderName) {
-        if (!folderMap.has(m.folderName)) folderMap.set(m.folderName, []);
-        folderMap.get(m.folderName)!.push(m);
-      }
-    });
-
-    const collections = Array.from(genreMap.entries())
-      .filter(([_, v]) => v.length >= 2) // only collections with at least 2 items
-      .map(([k, v]) => ({ title: `${k} Movies`, videos: v }));
-
-    const franchises = Array.from(folderMap.entries())
-      .filter(([_, v]) => v.length >= 2) // > 1 movie in a subfolder = Franchise!
-      .map(([k, v]) => ({ title: `${k} Collection`, videos: v }));
-
-    return { shows, movies, continueWatching, top10, collections: [...franchises, ...collections], folders: folderPseudoFiles };
-  }, [files, progresses, activeProfile]);
+    return {
+      movies,
+      folders,
+      top10,
+      continueWatchingAll,
+      continueWatchingMovies,
+      continueWatchingTv,
+      collections,
+      searchCatalog,
+      heroCatalog,
+    };
+  }, [files, progresses, activeProfile, overrideTick]);
 
   // Dynamic Hero Banner
   const [featuredIndex, setFeaturedIndex] = useState(0);
@@ -341,7 +322,11 @@ export default function App() {
   const [isHeroMuted, setIsHeroMuted] = useState(true);
   const heroVideoRef = useRef<HTMLVideoElement>(null);
   
-  const featured = files.length > 0 ? files[featuredIndex % files.length] : null;
+  const featured = heroCatalog.length > 0 ? heroCatalog[featuredIndex % heroCatalog.length] : null;
+  const featuredPlayTarget = featured ? resolvePlayTarget(featured) : null;
+  const featuredImageSrc = featured
+    ? (featured.localFanart || featured.localPoster || featured.thumbnail)
+    : undefined;
 
   // 1. Initial 3s delay on image
   useEffect(() => {
@@ -355,7 +340,7 @@ export default function App() {
     }, 3000);
     
     return () => clearTimeout(t);
-  }, [featuredIndex, files.length, featured?.path]);
+  }, [featuredIndex, heroCatalog.length, featured?.path]);
 
   // 2. Play when mounted
   useEffect(() => {
@@ -381,7 +366,7 @@ export default function App() {
       
       // Wait 5s on image, then cycle
       setTimeout(() => {
-        setFeaturedIndex((prev) => (prev + 1) % files.length);
+        setFeaturedIndex((prev) => (prev + 1) % heroCatalog.length);
       }, 5000);
     }
   };
@@ -438,12 +423,22 @@ export default function App() {
               >
                 <Search className="w-5 h-5 text-white" />
               </button>
-              <div className="flex items-center bg-black/50 border border-white/20 rounded px-2 hover:bg-white/10 transition cursor-pointer" onClick={openLibrarySettings}>
-                <FolderSearch className="w-4 h-4 text-gray-400 mr-2" />
+              {settings.compactLibraryButton ? (
+                <button
+                  onClick={openLibrarySettings}
+                  className="p-2 hover:bg-white/10 rounded-full transition"
+                  aria-label={hasLibrary ? 'Manage library' : 'Select library'}
+                >
+                  <FolderSearch className="w-5 h-5 text-white" />
+                </button>
+              ) : (
+                <div className="flex items-center bg-black/50 border border-white/20 rounded px-2 hover:bg-white/10 transition cursor-pointer" onClick={openLibrarySettings}>
+                  <FolderSearch className="w-4 h-4 text-gray-400 mr-2" />
                   <button className="bg-transparent text-xs text-white py-2 outline-none">
                     {hasLibrary ? 'Manage Library' : 'Select Library'}
                   </button>
-              </div>
+                </div>
+              )}
               <button 
                 onClick={() => setShowSettings(true)}
                 className="p-2 hover:bg-white/10 rounded-full transition"
@@ -514,9 +509,9 @@ export default function App() {
                     <div 
                       className={`absolute inset-0 w-full h-full transition-opacity duration-1000 ${isVideoPlaying ? 'opacity-0' : 'opacity-100'}`}
                     >
-                      {featured.thumbnail ? (
+                      {featuredImageSrc ? (
                         <img 
-                          src={featured.thumbnail} 
+                          src={featuredImageSrc} 
                           alt={featured.meta?.title || featured.name}
                           className="w-full h-full object-cover opacity-80 animate-ken-burns scale-110"
                         />
@@ -529,10 +524,10 @@ export default function App() {
                     <div 
                       className={`absolute inset-0 w-full h-full transition-opacity duration-1000 ${isVideoPlaying ? 'opacity-100' : 'opacity-0'}`}
                     >
-                      {delayOver && !playingVideo && (
+                      {delayOver && !playingVideo && featuredPlayTarget && (
                         <video
                           ref={heroVideoRef}
-                          src={`file:///${featured.path.replace(/\\/g, '/')}`}
+                          src={`file:///${featuredPlayTarget.path.replace(/\\/g, '/')}`}
                           autoPlay
                           muted={isHeroMuted}
                           onPlay={() => setIsVideoPlaying(true)}
@@ -597,20 +592,22 @@ export default function App() {
             {activeTab === 'home' && top10.length > 0 && (
               <ContentRow title="Top 10 in Your House Today" videos={top10} onPlay={handlePlayVideo} onInfo={setInfoVideo} isTop10={true} />
             )}
-            {(activeTab === 'home' || activeTab === 'tv') && continueWatching.length > 0 && (
-              <ContentRow title="Continue Watching" videos={continueWatching} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} />
+            {activeTab === 'home' && continueWatchingAll.length > 0 && (
+              <ContentRow title="Continue Watching" videos={continueWatchingAll} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} />
+            )}
+            {activeTab === 'tv' && continueWatchingTv.length > 0 && (
+              <ContentRow title="Continue Watching" videos={continueWatchingTv} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} />
+            )}
+            {(activeTab === 'home' || activeTab === 'movies') && continueWatchingMovies.length > 0 && (
+              <ContentRow title="Continue Watching" videos={continueWatchingMovies} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} />
             )}
             
-            {activeTab === 'home' && (
-              <ContentRow title="Home" videos={files} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable />
+            {activeTab === 'home' && heroCatalog.length > 0 && (
+              <ContentRow title="Home" videos={heroCatalog} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable />
             )}
             
             {(activeTab === 'home' || activeTab === 'tv') && folders.length > 0 && (
               <ContentRow title="Series" videos={folders} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable={activeTab === 'tv'} />
-            )}
-
-            {(activeTab === 'home' || activeTab === 'tv') && shows.length > 0 && (
-              <ContentRow title="TV Shows (All)" videos={shows} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable={activeTab === 'tv'} />
             )}
             
             {(activeTab === 'home' || activeTab === 'movies') && movies.length > 0 && (
@@ -651,7 +648,7 @@ export default function App() {
       {/* Search Overlay */}
       {showSearch && activeProfile && (
         <SearchOverlay
-          files={files}
+          files={searchCatalog}
           onClose={() => setShowSearch(false)}
           onPlay={handlePlayVideo}
           onInfo={setInfoVideo}
