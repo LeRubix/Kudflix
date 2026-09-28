@@ -54,12 +54,14 @@ export function EpisodeRow({
   index,
   seriesTvId,
   episodeMeta,
+  seriesThumbnail,
   onPlay,
 }: {
   ep: LocalFile;
   index: number;
   seriesTvId?: number;
   episodeMeta?: TMDBEpisodeMeta | null;
+  seriesThumbnail?: string;
   onPlay: (ep: LocalFile) => void;
 }) {
   const [synopsis, setSynopsis] = useState<string | null>(episodeMeta?.synopsis ?? null);
@@ -90,6 +92,7 @@ export function EpisodeRow({
   }, [seriesTvId, ep.path, ep.name, ep.relativePath, episodeMeta]);
 
   const description = synopsis || ep.meta?.description || 'A video file from your local library.';
+  const thumbSrc = ep.thumbnail || ep.localFanart || ep.localPoster || seriesThumbnail;
 
   return (
     <div
@@ -98,8 +101,8 @@ export function EpisodeRow({
     >
       <div className="text-gray-400 font-bold w-6 text-xl">{index + 1}</div>
       <div className="relative w-32 aspect-video bg-gray-800 rounded overflow-hidden flex-shrink-0">
-        {ep.thumbnail ? (
-          <img src={ep.thumbnail} className="w-full h-full object-cover" alt="" />
+        {thumbSrc ? (
+          <img src={thumbSrc} className="w-full h-full object-cover" alt="" />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-xs text-gray-600 p-2 text-center">
             No Image
@@ -113,9 +116,13 @@ export function EpisodeRow({
         <h4 className="text-white font-bold mb-1">{getEpisodeDisplayTitle(ep, tmdbEpisodeName)}</h4>
         <ExpandableDescription text={description} />
       </div>
-      {ep.duration && (
-        <div className="text-gray-500 text-sm flex-shrink-0">{Math.floor(ep.duration / 60)}m</div>
-      )}
+      <div className="text-gray-500 text-sm flex-shrink-0">
+        {ep.duration && ep.duration > 0 ? (
+          `${Math.floor(ep.duration / 60)}m`
+        ) : (
+          <span className="italic">Null</span>
+        )}
+      </div>
     </div>
   );
 }

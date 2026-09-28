@@ -5,12 +5,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   formatTmdbGenres,
   getCachedEpisodeMeta,
+  onTmdbEpisodeRetry,
   parseSeasonEpisode,
   prefetchEpisodeMetaBatch,
+  scheduleTmdbRetries,
   tmdbArtwork,
   tmdbMatchLabel,
   type TMDBEpisodeMeta,
 } from '../utils/tmdb';
+import { enrichEpisodesBatch } from '../utils/libraryLoader';
 import { useTMDB } from '../hooks/useTMDB';
 import { useTMDBDetails } from '../hooks/useTMDBDetails';
 import { getMediaOverride, isTmdbDisabled, type MediaOverride } from '../utils/mediaOverrides';
@@ -235,11 +238,13 @@ export function DetailModal({
   onClose,
   onPlay,
   onUpdate,
+  onEpisodeEnriched,
 }: {
   video: LocalFile;
   onClose: () => void;
   onPlay: (v: LocalFile) => void;
   onUpdate?: (path: string, override: MediaOverride) => void;
+  onEpisodeEnriched?: (enriched: LocalFile[]) => void;
 }) {
   const useLocalOnly = isTmdbDisabled(video);
   const tmdb = useTMDBDetails(video);
@@ -282,7 +287,7 @@ export function DetailModal({
 
   const [selectedSubfolder, setSelectedSubfolder] = useState<string>('');
 
-  const subfolders = useState(() => {
+  const subfolders = useMemo(() => {
     if (!video.isFolder || !video.folderFiles) return {};
     const groups: Record<string, LocalFile[]> = {};
     video.folderFiles.forEach(f => {
@@ -295,7 +300,7 @@ export function DetailModal({
       groups[sub].push(f);
     });
     return groups;
-  })[0];
+  }, [video.isFolder, video.folderFiles, video.path]);
 
   const subfolderNames = Object.keys(subfolders).sort((a,b) => a.localeCompare(b, undefined, {numeric:true}));
   
@@ -311,6 +316,25 @@ export function DetailModal({
   const heroArtwork = useLocalOnly ? tmdbArtwork(null, video) : tmdbArtwork(tmdb, video);
   const totalRuntime = video.folderFiles?.reduce((sum, ep) => sum + (ep.duration ?? 0), 0) ?? 0;
   const [episodeMetaMap, setEpisodeMetaMap] = useState<Record<string, TMDBEpisodeMeta | null>>({});
+  const seriesThumbnail = heroArtwork || video.thumbnail || video.localFanart || video.localPoster || undefined;
+
+  useEffect(() => {
+    if (!video.isFolder || episodesToRender.length === 0 || !onEpisodeEnriched) return;
+
+    const needsEnrich = episodesToRender.filter(
+      (ep) => !ep.thumbnail || !(ep.duration && ep.duration > 0),
+    );
+    if (needsEnrich.length === 0) return;
+
+    let cancelled = false;
+    enrichEpisodesBatch(needsEnrich, (batch) => {
+      if (!cancelled) onEpisodeEnriched(batch);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [video.path, episodePathsKey, onEpisodeEnriched]);
 
   useEffect(() => {
     if (!video.isFolder || useLocalOnly || !tmdb?.tvId || episodesToRender.length === 0) {
@@ -332,7 +356,7 @@ export function DetailModal({
 
     let cancelled = false;
 
-    (async () => {
+    const loadEpisodeMeta = async () => {
       await prefetchEpisodeMetaBatch(
         tmdb.tvId!,
         parsedEpisodes.map((item) => item.parsed),
@@ -345,10 +369,22 @@ export function DetailModal({
         if (cached !== undefined) map[ep.path] = cached;
       }
       setEpisodeMetaMap(map);
-    })();
+    };
+
+    loadEpisodeMeta();
+    scheduleTmdbRetries();
+    const retryTimer = setTimeout(() => {
+      if (!cancelled) loadEpisodeMeta();
+    }, 12_000);
+
+    const unsubRetry = onTmdbEpisodeRetry(() => {
+      if (!cancelled) loadEpisodeMeta();
+    });
 
     return () => {
       cancelled = true;
+      clearTimeout(retryTimer);
+      unsubRetry();
     };
   }, [video.path, tmdb?.tvId, useLocalOnly, selectedSubfolder, episodePathsKey]);
 
@@ -523,6 +559,7 @@ export function DetailModal({
                           index={i}
                           seriesTvId={useLocalOnly ? undefined : tmdb?.tvId}
                           episodeMeta={episodeMetaMap[ep.path]}
+                          seriesThumbnail={seriesThumbnail}
                           onPlay={onPlay}
                         />
                       ))}

@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { enrichLibraryInBackground, mergeEnrichedFiles, buildOptimizedEnrichQueue } from './utils/libraryLoader';
+import {
+  enrichLibraryInBackground,
+  mergeEnrichedFiles,
+  buildOptimizedEnrichQueue,
+} from './utils/libraryLoader';
 import { scanAllFolders, diffLibrary, mergeLibrarySync, pruneRemovedPaths } from './utils/librarySync';
 import { runInitialScanOnce, resetScanSession } from './utils/scanSession';
 import { Play, Info, FolderSearch, Settings as SettingsIcon, Search, Volume2, VolumeX } from 'lucide-react';
@@ -171,6 +175,16 @@ export default function App() {
     setFiles((prev) => prev.map((f) => (f.path === path ? applyMediaOverride(f) : f)));
     setInfoVideo((prev) => (prev?.path === path ? applyMediaOverride(prev) : prev));
   };
+
+  const handleEpisodeEnriched = useCallback((batch: LocalFile[]) => {
+    setFiles((prev) => mergeEnrichedFiles(prev, batch));
+    setInfoVideo((prev) => {
+      if (!prev?.isFolder || !prev.folderFiles) return prev;
+      const updates = new Map(batch.map((f) => [f.path, f]));
+      const folderFiles = prev.folderFiles.map((f) => updates.get(f.path) ?? f);
+      return { ...prev, folderFiles };
+    });
+  }, []);
 
   const scanLibrary = useCallback(async (incremental = false) => {
     const hasFolders = settings.movieFolders.length > 0 || settings.tvFolders.length > 0;
@@ -756,6 +770,7 @@ export default function App() {
           onClose={() => setInfoVideo(null)}
           onPlay={(v) => { setInfoVideo(null); handlePlayVideo(v); }}
           onUpdate={handleUpdateVideo}
+          onEpisodeEnriched={handleEpisodeEnriched}
         />
       )}
 

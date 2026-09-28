@@ -96,6 +96,7 @@ declare global {
       selectWallpaperImage: () => Promise<string | null>;
       playInExternalPlayer: (playerPath: string, videoPath: string) => Promise<void>;
       probeMedia: (videoPath: string) => Promise<{ audioCodec: string | null; hasAudio: boolean | null }>;
+      probeMediaDuration: (videoPath: string) => Promise<number | null>;
       probeTracks: (videoPath: string) => Promise<{ audio: ProbeTrack[]; subtitles: ProbeTrack[] }>;
       findSubtitleFiles: (videoPath: string) => Promise<ExternalSubtitleFile[]>;
       selectSubtitleFile: () => Promise<string | null>;

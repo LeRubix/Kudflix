@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectWallpaperImage: () => ipcRenderer.invoke('select-wallpaper-image'),
   playInExternalPlayer: (playerPath, videoPath) => ipcRenderer.invoke('play-in-external-player', playerPath, videoPath),
   probeMedia: (videoPath) => ipcRenderer.invoke('probe-media', videoPath),
+  probeMediaDuration: (videoPath) => ipcRenderer.invoke('probe-media-duration', videoPath),
   probeTracks: (videoPath) => ipcRenderer.invoke('probe-tracks', videoPath),
   findSubtitleFiles: (videoPath) => ipcRenderer.invoke('find-subtitle-files', videoPath),
   selectSubtitleFile: () => ipcRenderer.invoke('select-subtitle-file'),

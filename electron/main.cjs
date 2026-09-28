@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { MpvController } = require('./mpvController.cjs');
-const { probeMediaAudio, probeTracks, findSubtitleFiles } = require('./mediaUtils.cjs');
+const { probeMediaAudio, probeMediaDuration, probeTracks, findSubtitleFiles } = require('./mediaUtils.cjs');
 const { PlayerWindows, TITLE_STRIP_HEIGHT } = require('./playerWindows.cjs');
 const { LibraryWatcher } = require('./libraryWatcher.cjs');
 const appIcon = require('./appIcon.cjs');
@@ -309,10 +309,14 @@ ipcMain.handle('scan-directory', async (event, dirPath) => {
         localNfoContent = fs.readFileSync(movieNfoPath, 'utf8');
       }
       
+      const scanRootName = path.basename(fullPath);
+      const rel = path.relative(fullPath, filepath).replace(/\\/g, '/');
+      const relativePath = rel.includes('/') ? rel : `${scanRootName}/${rel}`;
+
       return {
         name: cleanName || file, // Fallback to raw file if regex wipes it completely
         path: filepath,
-        relativePath: path.relative(fullPath, filepath).replace(/\\/g, '/'),
+        relativePath,
         folderName: dir !== fullPath ? path.basename(dir) : undefined,
         localPoster,
         localFanart,
@@ -363,6 +367,10 @@ ipcMain.handle('play-in-external-player', async (event, playerPath, videoPath) =
 // Probe audio codec via ffprobe
 ipcMain.handle('probe-media', async (event, videoPath) => {
   return probeMediaAudio(videoPath);
+});
+
+ipcMain.handle('probe-media-duration', async (event, videoPath) => {
+  return probeMediaDuration(videoPath);
 });
 
 // Probe all audio and subtitle tracks

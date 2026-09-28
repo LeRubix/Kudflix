@@ -40,6 +40,19 @@ function runFfprobe(args) {
   });
 }
 
+async function probeMediaDuration(videoPath) {
+  const stdout = await runFfprobe([
+    '-v', 'error',
+    '-show_entries', 'format=duration',
+    '-of', 'default=noprint_wrappers=1:nokey=1',
+    videoPath,
+  ]);
+
+  const seconds = parseFloat((stdout || '').trim());
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return seconds;
+}
+
 async function probeMediaAudio(videoPath) {
   const stdout = await runFfprobe([
     '-v', 'error',
@@ -162,6 +175,7 @@ function findSubtitleFiles(videoPath) {
 
 module.exports = {
   probeMediaAudio,
+  probeMediaDuration,
   probeTracks,
   findSubtitleFiles,
   SUBTITLE_EXTENSIONS,

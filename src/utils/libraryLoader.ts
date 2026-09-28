@@ -3,10 +3,10 @@ import { applyMediaOverride } from './mediaOverrides';
 import { resolveFileMeta } from './metadata';
 import { generateVideoThumbnail } from './thumbnail';
 import { runWithConcurrency } from './concurrency';
-import { getCachedDuration } from './mediaCache';
-import { getSeriesRoot } from './grouping';
+import { getCachedDuration, setCachedDuration } from './mediaCache';
 
 const ENRICH_CONCURRENCY = 6;
+const TV_ENRICH_SCAN_CAP = 200;
 
 type ScannedFile = {
   name: string;
@@ -18,6 +18,29 @@ type ScannedFile = {
   localNfoContent?: string | null;
   mtimeMs?: number;
 };
+
+function needsEnrich(f: LocalFile | undefined): boolean {
+  return !f?.thumbnail || !(f.duration && f.duration > 0);
+}
+
+async function probeDuration(videoPath: string): Promise<number> {
+  const cached = getCachedDuration(videoPath);
+  if (cached && cached > 0) return cached;
+
+  if (window.electronAPI?.probeMediaDuration) {
+    try {
+      const seconds = await window.electronAPI.probeMediaDuration(videoPath);
+      if (seconds && seconds > 0) {
+        setCachedDuration(videoPath, seconds);
+        return seconds;
+      }
+    } catch {
+      // fall through to thumbnail probe
+    }
+  }
+
+  return 0;
+}
 
 export function toBasicFile(file: ScannedFile, category: 'movie' | 'tv'): LocalFile {
   const cachedDuration = getCachedDuration(file.path) ?? 0;
@@ -31,38 +54,26 @@ export function toBasicFile(file: ScannedFile, category: 'movie' | 'tv'): LocalF
   });
 }
 
-/** Movies: all files. TV: one representative per series + any priority paths (continue watching). */
+/** Movies: all files. TV: all episodes needing enrich (capped) + priority paths. */
 export function buildOptimizedEnrichQueue(
   items: { file: ScannedFile; category: 'movie' | 'tv' }[],
   priorityPaths: Set<string> = new Set(),
   hydratedFiles: LocalFile[] = [],
 ) {
   const hydrated = new Map(hydratedFiles.map((f) => [f.path, f]));
-  const needsEnrich = (path: string) => {
-    const f = hydrated.get(path);
-    return !f?.thumbnail || !f.duration;
-  };
 
-  const movies = items.filter((i) => i.category === 'movie' && needsEnrich(i.file.path));
+  const movies = items.filter((i) => i.category === 'movie' && needsEnrich(hydrated.get(i.file.path)));
   const tvPriority = items.filter(
-    (i) => i.category === 'tv' && priorityPaths.has(i.file.path) && needsEnrich(i.file.path),
+    (i) => i.category === 'tv' && priorityPaths.has(i.file.path) && needsEnrich(hydrated.get(i.file.path)),
   );
 
-  const tvRepresentatives = new Map<string, (typeof items)[0]>();
-  const score = (f: ScannedFile) => (f.localFanart ? 2 : 0) + (f.localPoster ? 1 : 0);
-
-  for (const item of items) {
-    if (item.category !== 'tv' || priorityPaths.has(item.file.path) || !needsEnrich(item.file.path)) continue;
-    const root = getSeriesRoot(item.file.relativePath) ?? item.file.path;
-    const existing = tvRepresentatives.get(root);
-    if (!existing || score(item.file) > score(existing.file)) {
-      tvRepresentatives.set(root, item);
-    }
-  }
+  const tvAll = items.filter(
+    (i) => i.category === 'tv' && !priorityPaths.has(i.file.path) && needsEnrich(hydrated.get(i.file.path)),
+  );
 
   const seen = new Set<string>();
   const result: typeof items = [];
-  for (const item of [...movies, ...tvPriority, ...tvRepresentatives.values()]) {
+  for (const item of [...movies, ...tvPriority, ...tvAll.slice(0, TV_ENRICH_SCAN_CAP)]) {
     if (seen.has(item.file.path)) continue;
     seen.add(item.file.path);
     result.push(item);
@@ -75,25 +86,43 @@ async function enrichOne(file: ScannedFile, category: 'movie' | 'tv'): Promise<L
   let thumbnail = file.localFanart || file.localPoster || meta.poster || undefined;
   const skipThumbnail = !!(file.localPoster || file.localFanart);
 
+  let duration = await probeDuration(file.path);
+
   const generated = await generateVideoThumbnail(file.path, skipThumbnail, file.mtimeMs);
   if (!thumbnail && generated.thumbnail) {
     thumbnail = generated.thumbnail;
+  }
+  if (duration <= 0 && generated.duration > 0) {
+    duration = generated.duration;
   }
 
   return applyMediaOverride({
     ...file,
     meta,
     thumbnail,
-    duration: generated.duration || getCachedDuration(file.path) || 0,
+    duration: duration > 0 ? duration : 0,
     dateModified: file.mtimeMs ?? Date.now(),
     category,
   });
 }
 
+function toScannedFile(file: LocalFile): ScannedFile {
+  return {
+    name: file.name,
+    path: file.path,
+    relativePath: file.relativePath,
+    folderName: file.folderName,
+    localPoster: file.localPoster,
+    localFanart: file.localFanart,
+    localNfoContent: file.localNfoContent,
+    mtimeMs: file.dateModified,
+  };
+}
+
 /** Fill in durations/thumbnails in the background without blocking the UI. */
 export async function enrichLibraryInBackground(
   items: { file: ScannedFile; category: 'movie' | 'tv' }[],
-  onBatch: (enriched: LocalFile[]) => void
+  onBatch: (enriched: LocalFile[]) => void,
 ): Promise<void> {
   const batch: LocalFile[] = [];
   let batchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -122,8 +151,25 @@ export async function enrichLibraryInBackground(
   flush();
 }
 
+/** Enrich a batch of episode files (e.g. when a series modal opens). */
+export async function enrichEpisodesBatch(
+  episodes: LocalFile[],
+  onBatch: (enriched: LocalFile[]) => void,
+): Promise<void> {
+  const toEnrich = episodes.filter((ep) => needsEnrich(ep));
+  if (toEnrich.length === 0) return;
+
+  const batch: LocalFile[] = [];
+  await runWithConcurrency(toEnrich, ENRICH_CONCURRENCY, async (ep) => {
+    const enriched = await enrichOne(toScannedFile(ep), 'tv');
+    batch.push(enriched);
+  });
+
+  if (batch.length > 0) onBatch(batch);
+}
+
 export function mergeEnrichedFiles(prev: LocalFile[], enriched: LocalFile[]): LocalFile[] {
   if (enriched.length === 0) return prev;
-  const updates = new Map(enriched.map(f => [f.path, f]));
-  return prev.map(f => updates.get(f.path) ?? f);
+  const updates = new Map(enriched.map((f) => [f.path, f]));
+  return prev.map((f) => updates.get(f.path) ?? f);
 }

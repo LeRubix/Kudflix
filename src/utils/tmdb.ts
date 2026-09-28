@@ -45,8 +45,58 @@ export interface TMDBLookupOptions {
 const inflight = new Map<string, Promise<TMDBResult | null>>();
 const detailsInflight = new Map<string, Promise<TMDBResult | null>>();
 const episodeInflight = new Map<string, Promise<TMDBEpisodeMeta | null>>();
+const episodeRetryQueue: { tvId: number; season: number; episode: number }[] = [];
+const retryListeners = new Set<() => void>();
 const rateTimestamps: number[] = [];
 let prefetchGen = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+class TmdbTransientError extends Error {
+  constructor() {
+    super('TMDB rate limited');
+    this.name = 'TmdbTransientError';
+  }
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 429 || status === 503;
+}
+
+function checkTransientResponse(res: Response): void {
+  if (isTransientStatus(res.status)) throw new TmdbTransientError();
+}
+
+function queueEpisodeRetry(tvId: number, season: number, episode: number): void {
+  const key = episodeCacheKey(tvId, season, episode);
+  if (episodeRetryQueue.some((e) => episodeCacheKey(e.tvId, e.season, e.episode) === key)) return;
+  episodeRetryQueue.push({ tvId, season, episode });
+  scheduleTmdbRetries();
+}
+
+function notifyRetryListeners(): void {
+  retryListeners.forEach((fn) => fn());
+}
+
+export function onTmdbEpisodeRetry(listener: () => void): () => void {
+  retryListeners.add(listener);
+  return () => retryListeners.delete(listener);
+}
+
+export function scheduleTmdbRetries(): void {
+  if (retryTimer) return;
+  retryTimer = setTimeout(async () => {
+    retryTimer = null;
+    const batch = episodeRetryQueue.splice(0, episodeRetryQueue.length);
+    if (batch.length === 0) return;
+
+    await runWithConcurrency(batch, PREFETCH_CONCURRENCY, async (item) => {
+      await fetchEpisodeMeta(item.tvId, item.season, item.episode);
+    });
+
+    notifyRetryListeners();
+    if (episodeRetryQueue.length > 0) scheduleTmdbRetries();
+  }, RATE_WINDOW_MS + 500);
+}
 
 function apiKey(): string {
   return getActiveTmdbApiKey();
@@ -198,6 +248,7 @@ async function fetchAndCache(
     saveCache(cache);
     return result;
   } catch (err) {
+    if (err instanceof TmdbTransientError) return null;
     console.error('TMDB fetch error:', err);
     return null;
   }
@@ -228,6 +279,9 @@ async function enrichWithDetails(
 
     const res = await fetch(url);
     if (!res.ok) {
+      if (isTransientStatus(res.status)) {
+        return base;
+      }
       const failed = { ...base, detailsFetched: true };
       persistLookupResult(lookup, failed);
       return failed;
@@ -389,6 +443,7 @@ async function searchTMDB(lookup: TMDBLookupOptions): Promise<TMDBResult | null>
     const movieRes = await fetch(
       `https://api.themoviedb.org/3/search/movie?api_key=${key}&query=${encoded}${yearParam}&language=en-US&page=1`,
     );
+    checkTransientResponse(movieRes);
     if (movieRes.ok) {
       const data = await movieRes.json();
       const hit = pickBestResult(data.results ?? [], title, year);
@@ -400,6 +455,7 @@ async function searchTMDB(lookup: TMDBLookupOptions): Promise<TMDBResult | null>
     const tvRes = await fetch(
       `https://api.themoviedb.org/3/search/tv?api_key=${key}&query=${encoded}&language=en-US&page=1`,
     );
+    checkTransientResponse(tvRes);
     if (tvRes.ok) {
       const data = await tvRes.json();
       const hit = pickBestResult(data.results ?? [], title, year);
@@ -410,6 +466,7 @@ async function searchTMDB(lookup: TMDBLookupOptions): Promise<TMDBResult | null>
   const multiRes = await fetch(
     `https://api.themoviedb.org/3/search/multi?api_key=${key}&query=${encoded}&language=en-US&page=1`,
   );
+  checkTransientResponse(multiRes);
   if (!multiRes.ok) return null;
 
   const data = await multiRes.json();
@@ -574,8 +631,14 @@ async function fetchEpisodeMeta(
       `https://api.themoviedb.org/3/tv/${tvId}/season/${season}/episode/${episode}?api_key=${apiKey()}&language=en-US`,
     );
     if (!res.ok) {
-      cache[key] = null;
-      saveEpisodeCache(cache);
+      if (isTransientStatus(res.status)) {
+        queueEpisodeRetry(tvId, season, episode);
+        return null;
+      }
+      if (res.status === 404) {
+        cache[key] = null;
+        saveEpisodeCache(cache);
+      }
       return null;
     }
     const data = await res.json();
