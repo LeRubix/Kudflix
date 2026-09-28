@@ -17,6 +17,19 @@ interface ProgressBarProps {
   onScrubbingChange: (scrubbing: boolean) => void;
 }
 
+function getCssZoom(el: HTMLElement | null): number {
+  let zoom = 1;
+  while (el) {
+    const value = getComputedStyle(el).zoom;
+    if (value && value !== 'normal') {
+      const parsed = parseFloat(value);
+      if (!Number.isNaN(parsed) && parsed > 0) zoom *= parsed;
+    }
+    el = el.parentElement;
+  }
+  return zoom;
+}
+
 function ProgressBar({ timePos, duration, playing, speed, onSeek, onScrubbingChange }: ProgressBarProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
@@ -25,7 +38,7 @@ function ProgressBar({ timePos, duration, playing, speed, onSeek, onScrubbingCha
   const base = useRef({ time: timePos, at: performance.now() });
   const pendingSeek = useRef<{ time: number; until: number } | null>(null);
   const [scrubTime, setScrubTime] = useState<number | null>(null);
-  const [hover, setHover] = useState<{ x: number; time: number } | null>(null);
+  const [hover, setHover] = useState<{ pct: number; time: number } | null>(null);
 
   useEffect(() => {
     const pending = pendingSeek.current;
@@ -62,9 +75,14 @@ function ProgressBar({ timePos, duration, playing, speed, onSeek, onScrubbingCha
   }, [playing, speed, duration, scrubTime]);
 
   const timeAt = (clientX: number) => {
-    const rect = trackRef.current!.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    return { time: ratio * duration, x: ratio * rect.width };
+    const track = trackRef.current!;
+    const bar = track.querySelector('[data-progress-bar]') as HTMLElement | null;
+    const el = bar ?? track;
+    const rect = el.getBoundingClientRect();
+    const zoom = getCssZoom(track);
+    const trackWidth = zoom !== 1 ? el.offsetWidth * zoom : rect.width;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / trackWidth));
+    return { time: ratio * duration, pct: ratio * 100 };
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -103,9 +121,12 @@ function ProgressBar({ timePos, duration, playing, speed, onSeek, onScrubbingCha
         onPointerUp={onPointerUp}
         onPointerLeave={() => setHover(null)}
       >
-        <div className={`relative w-full bg-white/25 transition-[height] duration-150 ${scrubTime !== null ? 'h-2' : 'h-1 group-hover/bar:h-2'}`}>
+        <div
+          data-progress-bar
+          className={`relative w-full bg-white/25 transition-[height] duration-150 ${scrubTime !== null ? 'h-2' : 'h-1 group-hover/bar:h-2'}`}
+        >
           {hover && (
-            <div className="absolute inset-y-0 left-0 bg-white/30" style={{ width: hover.x }} />
+            <div className="absolute inset-y-0 left-0 bg-white/30" style={{ width: `${hover.pct}%` }} />
           )}
           <div ref={fillRef} className="absolute inset-y-0 left-0 bg-accent" />
         </div>
@@ -118,7 +139,7 @@ function ProgressBar({ timePos, duration, playing, speed, onSeek, onScrubbingCha
         {tooltip && (
           <div
             className="absolute bottom-7 -translate-x-1/2 px-2 py-1 rounded bg-black/85 text-white text-sm font-semibold tabular-nums pointer-events-none"
-            style={{ left: tooltip.x }}
+            style={{ left: `${tooltip.pct}%` }}
           >
             {formatTime(tooltip.time)}
           </div>

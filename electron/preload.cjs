@@ -8,10 +8,16 @@ function subscribe(channel, callback) {
 
 contextBridge.exposeInMainWorld('electronAPI', {
   scanDirectory: (dirPath) => ipcRenderer.invoke('scan-directory', dirPath),
+  setAppIcon: (variant) => ipcRenderer.invoke('set-app-icon', variant),
+  getAppIconPath: (variant) => ipcRenderer.invoke('get-app-icon-path', variant),
+  updateLibraryWatch: (folders) => ipcRenderer.invoke('update-library-watch', folders),
+  onLibraryChanged: (callback) => subscribe('library-changed', callback),
+  showInExplorer: (filePath) => ipcRenderer.invoke('show-in-explorer', filePath),
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   selectFolders: () => ipcRenderer.invoke('select-folders'),
   selectFile: () => ipcRenderer.invoke('select-file'),
   cacheProfileImage: () => ipcRenderer.invoke('cache-profile-image'),
+  selectWallpaperImage: () => ipcRenderer.invoke('select-wallpaper-image'),
   playInExternalPlayer: (playerPath, videoPath) => ipcRenderer.invoke('play-in-external-player', playerPath, videoPath),
   probeMedia: (videoPath) => ipcRenderer.invoke('probe-media', videoPath),
   probeTracks: (videoPath) => ipcRenderer.invoke('probe-tracks', videoPath),

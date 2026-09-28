@@ -1,12 +1,22 @@
 import { getCachedDuration, setCachedDuration } from './mediaCache';
+import { getCachedMedia, setCachedMedia } from './thumbnailCache';
 
 const MAX_THUMB_WIDTH = 1280;
 const THUMB_TIMEOUT_MS = 12000;
 
 export async function generateVideoThumbnail(
   videoPath: string,
-  skipThumbnail: boolean = false
+  skipThumbnail: boolean = false,
+  mtimeMs?: number,
 ): Promise<{ thumbnail: string | null; duration: number }> {
+  const diskCache = await getCachedMedia(videoPath, mtimeMs);
+  if (diskCache) {
+    if (diskCache.duration > 0) setCachedDuration(videoPath, diskCache.duration);
+    if (skipThumbnail || diskCache.thumbnail) {
+      return { thumbnail: diskCache.thumbnail, duration: diskCache.duration };
+    }
+  }
+
   const cachedDuration = getCachedDuration(videoPath);
   if (skipThumbnail && cachedDuration) {
     return { thumbnail: null, duration: cachedDuration };
@@ -25,6 +35,14 @@ export async function generateVideoThumbnail(
       video.src = '';
       video.load();
       if (result.duration > 0) setCachedDuration(videoPath, result.duration);
+      if (mtimeMs != null) {
+        setCachedMedia({
+          path: videoPath,
+          thumbnail: result.thumbnail,
+          duration: result.duration,
+          mtimeMs,
+        });
+      }
       resolve(result);
     };
 

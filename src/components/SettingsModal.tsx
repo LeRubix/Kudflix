@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Palette, Image as ImageIcon, Save, Type, Maximize, Settings as SettingsIcon, MonitorPlay, ShieldAlert, Check, User, Upload, Edit2, FolderOpen, Trash2 } from 'lucide-react';
 import type { Profile } from './ProfilesScreen';
+import { MAX_APP_NAME_LENGTH, truncateAppName } from '../utils/settings';
 
 export interface Settings {
   accentColor: string;
@@ -15,49 +16,65 @@ export interface Settings {
   skipProfilePicker: boolean;
   defaultProfileId: string | null;
   compactLibraryButton: boolean;
+  appIcon: 'default' | 'alternate';
+  autoSyncLibrary: boolean;
 }
 
 const RECENT_COLORS = ['#003e8f', '#bc13fe', '#E50914', '#555555', '#7b4cff'];
 
 const AVATAR_OPTIONS = Array.from({ length: 9 }, (_, i) => `./avatars/key${i + 1}.jpg`);
 
-export function SettingsModal({ onClose, onSave, currentSettings, activeProfileId: _activeProfileId, initialTab = 'general' }: { 
+export function SettingsModal({ onClose, onSave, currentSettings, activeProfileId: _activeProfileId, initialTab = 'general', onScanLibrary, librarySyncing = false }: { 
   onClose: () => void, 
   onSave: (settings: Settings) => void,
   currentSettings: Settings,
   activeProfileId?: string | null,
-  initialTab?: 'general' | 'library' | 'personalization' | 'profiles' | 'advanced'
+  initialTab?: 'general' | 'library' | 'personalization' | 'profiles' | 'advanced',
+  onScanLibrary?: () => void | Promise<void>,
+  librarySyncing?: boolean,
 }) {
   const [settings, setSettings] = useState<Settings>({
     ...currentSettings,
+    appName: truncateAppName(currentSettings.appName ?? 'Kudflix'),
     movieFolders: currentSettings.movieFolders ?? [],
     tvFolders: currentSettings.tvFolders ?? [],
     skipProfilePicker: currentSettings.skipProfilePicker ?? false,
     defaultProfileId: currentSettings.defaultProfileId ?? null,
     compactLibraryButton: currentSettings.compactLibraryButton ?? false,
+    appIcon: currentSettings.appIcon ?? 'default',
+    autoSyncLibrary: currentSettings.autoSyncLibrary ?? true,
   });
   const [activeTab, setActiveTab] = useState<'general' | 'library' | 'personalization' | 'profiles' | 'advanced'>(initialTab);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
   const [showAvatarGrid, setShowAvatarGrid] = useState(false);
+  const [iconPreviews, setIconPreviews] = useState<{ default: string | null; alternate: string | null }>({ default: null, alternate: null });
 
   useEffect(() => {
     const saved = localStorage.getItem('netflix_profiles');
     if (saved) setProfiles(JSON.parse(saved));
   }, []);
 
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.getAppIconPath) return;
+    Promise.all([
+      api.getAppIconPath('default'),
+      api.getAppIconPath('alternate'),
+    ]).then(([defaultPath, alternatePath]) => {
+      setIconPreviews({ default: defaultPath, alternate: alternatePath });
+    });
+  }, []);
+
   const handleSave = () => {
-    onSave(settings);
+    onSave({ ...settings, appName: truncateAppName(settings.appName) });
     onClose();
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0] as any;
-      if (file.path) {
-        setSettings({ ...settings, wallpaperPath: file.path });
-      }
-    }
+  const pickWallpaper = async () => {
+    if (!window.electronAPI?.selectWallpaperImage) return;
+    const path = await window.electronAPI.selectWallpaperImage();
+    if (path) setSettings({ ...settings, wallpaperPath: path });
   };
 
   const addFolders = async (type: 'movie' | 'tv') => {
@@ -92,9 +109,9 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
 
   return (
     <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4">
-      <div className="bg-[#181818] w-full max-w-2xl rounded-xl shadow-2xl border border-gray-800 flex overflow-hidden min-h-[500px]">
+      <div className="bg-[#181818] w-[920px] h-[680px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] rounded-xl shadow-2xl border border-gray-800 flex overflow-hidden">
         {/* Sidebar Tabs */}
-        <div className="w-1/3 bg-[#111] p-6 border-r border-gray-800 flex flex-col gap-2">
+        <div className="w-1/3 bg-[#111] p-6 border-r border-gray-800 flex flex-col gap-2 shrink-0 overflow-y-auto">
           <h2 className="text-xl font-bold mb-6 text-white px-2">Settings</h2>
           
           <button 
@@ -130,14 +147,15 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
         </div>
 
         {/* Content Area */}
-        <div className="w-2/3 p-8 relative overflow-y-auto max-h-[80vh]">
+        <div className="w-2/3 flex flex-col min-h-0 min-w-0 relative">
           <button 
             onClick={onClose}
-            className="absolute top-4 right-4 text-gray-400 hover:text-white transition"
+            className="absolute top-4 right-4 z-10 text-gray-400 hover:text-white transition"
           >
             <X className="w-6 h-6" />
           </button>
 
+          <div className="flex-1 overflow-y-auto p-8 min-h-0">
           {activeTab === 'general' && (
             <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-300">
               <h3 className="text-xl font-bold text-white mb-6">General Settings</h3>
@@ -149,11 +167,14 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                 <input 
                   type="text" 
                   value={settings.appName}
-                  onChange={(e) => setSettings({ ...settings, appName: e.target.value })}
+                  maxLength={MAX_APP_NAME_LENGTH}
+                  onChange={(e) => setSettings({ ...settings, appName: e.target.value.slice(0, MAX_APP_NAME_LENGTH) })}
                   className="bg-black/50 border border-gray-700 rounded-lg px-4 py-3 text-sm text-white outline-none w-full focus:border-accent transition"
                   placeholder="e.g., JOHNFLIX"
                 />
-                <p className="text-xs text-gray-500 mt-2">Replaces the Netflix logo in the top corner.</p>
+                <p className="text-xs text-gray-500 mt-2">
+                  Replaces the Netflix logo in the top corner. {settings.appName.length}/{MAX_APP_NAME_LENGTH} characters.
+                </p>
               </div>
 
               <div>
@@ -184,6 +205,7 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                   <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${settings.compactLibraryButton ? 'translate-x-6' : ''}`} />
                 </button>
               </div>
+
             </div>
           )}
 
@@ -239,6 +261,35 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                   <FolderOpen className="w-4 h-4" /> Add TV Folder(s)
                 </button>
               </div>
+
+              <div className="border-t border-gray-800 pt-8 space-y-4">
+                <div className="flex items-center justify-between bg-black/50 border border-gray-700 rounded-lg px-4 py-3">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-300">Auto-sync library</p>
+                    <p className="text-xs text-gray-500 mt-1">Automatically refresh when files are added or removed in your folders.</p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settings.autoSyncLibrary}
+                    onClick={() => setSettings({ ...settings, autoSyncLibrary: !settings.autoSyncLibrary })}
+                    className={`relative w-12 h-6 rounded-full transition ${settings.autoSyncLibrary ? 'bg-accent' : 'bg-gray-600'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${settings.autoSyncLibrary ? 'translate-x-6' : ''}`} />
+                  </button>
+                </div>
+
+                {onScanLibrary && (
+                  <button
+                    type="button"
+                    onClick={() => onScanLibrary()}
+                    disabled={librarySyncing}
+                    className="flex items-center gap-2 bg-accent hover:opacity-90 disabled:opacity-50 px-4 py-2 rounded-lg text-white text-sm font-semibold transition"
+                  >
+                    {librarySyncing ? 'Scanning…' : 'Scan library now'}
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -284,18 +335,16 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
 
               <div>
                 <label className="block text-sm font-semibold text-gray-300 mb-2">Custom Wallpaper</label>
-                <div className="flex items-center gap-3 bg-black/50 border border-gray-700 rounded-lg px-4 py-3 relative hover:border-gray-500 transition cursor-pointer group">
-                  <ImageIcon className="w-5 h-5 text-gray-400 group-hover:text-white" />
-                  <input 
-                    type="file" 
-                    accept="image/*"
-                    onChange={handleFileSelect}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <span className="text-sm text-gray-300 truncate w-full">
-                    {settings.wallpaperPath ? settings.wallpaperPath.split('\\').pop() : 'Click to browse...'}
+                <button
+                  type="button"
+                  onClick={pickWallpaper}
+                  className="flex items-center gap-3 bg-black/50 border border-gray-700 rounded-lg px-4 py-3 w-full hover:border-gray-500 transition cursor-pointer group text-left"
+                >
+                  <ImageIcon className="w-5 h-5 text-gray-400 group-hover:text-white shrink-0" />
+                  <span className="text-sm text-gray-300 truncate">
+                    {settings.wallpaperPath ? settings.wallpaperPath.split(/[/\\]/).pop() : 'Click to browse...'}
                   </span>
-                </div>
+                </button>
                 {settings.wallpaperPath && (
                   <button 
                     onClick={() => setSettings({ ...settings, wallpaperPath: '' })}
@@ -318,6 +367,31 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                   className="w-full accent-accent"
                 />
               </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-300 mb-3">App Icon</label>
+                <p className="text-xs text-gray-500 mb-3">Changes the window and taskbar icon while the app is running.</p>
+                <div className="flex gap-4">
+                  {(['default', 'alternate'] as const).map((variant) => (
+                    <button
+                      key={variant}
+                      type="button"
+                      onClick={() => setSettings({ ...settings, appIcon: variant })}
+                      className={`flex flex-col items-center gap-2 p-3 rounded-lg border-2 transition ${
+                        settings.appIcon === variant ? 'border-white bg-white/5' : 'border-gray-700 hover:border-gray-500'
+                      }`}
+                    >
+                      {iconPreviews[variant] ? (
+                        <img src={iconPreviews[variant]!} alt="" className="w-12 h-12 rounded object-contain bg-black/30" />
+                      ) : (
+                        <div className="w-12 h-12 rounded bg-gray-800" />
+                      )}
+                      <span className="text-xs font-semibold text-gray-300 capitalize">{variant}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
             </div>
           )}
 
@@ -554,8 +628,10 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
             </div>
           )}
 
+          </div>
+
           {/* Action Footer */}
-          <div className="mt-12 flex justify-end">
+          <div className="shrink-0 border-t border-gray-800 px-8 py-4 flex justify-end bg-[#181818]">
             <button 
               onClick={handleSave}
               className="flex items-center gap-2 bg-accent text-white font-bold py-3 px-8 rounded-lg shadow-lg hover:shadow-accent/20 hover:scale-105 active:scale-95 transition-all"

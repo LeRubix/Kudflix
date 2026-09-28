@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { MpvController } = require('./mpvController.cjs');
 const { probeMediaAudio, probeTracks, findSubtitleFiles } = require('./mediaUtils.cjs');
 const { PlayerWindows, TITLE_STRIP_HEIGHT } = require('./playerWindows.cjs');
+const { LibraryWatcher } = require('./libraryWatcher.cjs');
 
 const isDev = !app.isPackaged;
 
@@ -11,6 +12,24 @@ let mainWindow = null;
 let playerWindows = null;
 let playerSession = null;
 const mpvController = new MpvController();
+
+function getIconPath(variant) {
+  const name = variant === 'alternate' ? 'icon2.png' : 'icon.png';
+  return path.join(__dirname, '../build', name);
+}
+
+function applyAppIcon(variant) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const iconPath = getIconPath(variant);
+  if (!fs.existsSync(iconPath)) return;
+  mainWindow.setIcon(nativeImage.createFromPath(iconPath));
+}
+
+const libraryWatcher = new LibraryWatcher(() => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('library-changed');
+  }
+});
 
 mpvController.onStateChange = (state) => {
   playerWindows?.sendToControls('player-state', state);
@@ -84,11 +103,13 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
     playerWindows = null;
+    libraryWatcher.stop();
   });
 }
 
 app.on('before-quit', () => {
   mpvController.close();
+  libraryWatcher.stop();
 });
 
 app.whenReady().then(() => {
@@ -113,7 +134,7 @@ app.on('window-all-closed', function () {
   if (process.platform !== 'darwin') app.quit();
 });
 
-const { dialog } = require('electron');
+const { dialog, shell } = require('electron');
 
 // IPC Handler to select folder natively
 ipcMain.handle('select-folder', async () => {
@@ -154,35 +175,101 @@ ipcMain.handle('cache-profile-image', async () => {
   return `file:///${destPath.replace(/\\/g, '/')}`;
 });
 
+ipcMain.handle('select-wallpaper-image', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'] }],
+  });
+  if (result.canceled) return null;
+
+  const sourcePath = result.filePaths[0];
+  const wallpapersDir = path.join(app.getPath('userData'), 'wallpapers');
+  if (!fs.existsSync(wallpapersDir)) {
+    fs.mkdirSync(wallpapersDir, { recursive: true });
+  }
+
+  const ext = path.extname(sourcePath).toLowerCase() || '.jpg';
+  const destPath = path.join(wallpapersDir, `${Date.now()}${ext}`);
+  fs.copyFileSync(sourcePath, destPath);
+
+  return destPath;
+});
+
+ipcMain.handle('set-app-icon', async (_event, variant) => {
+  applyAppIcon(variant === 'alternate' ? 'alternate' : 'default');
+  return { ok: true };
+});
+
+ipcMain.handle('get-app-icon-path', async (_event, variant) => {
+  const iconPath = getIconPath(variant === 'alternate' ? 'alternate' : 'default');
+  if (!fs.existsSync(iconPath)) return null;
+  return `file:///${iconPath.replace(/\\/g, '/')}`;
+});
+
+ipcMain.handle('update-library-watch', async (_event, folders) => {
+  libraryWatcher.updateFolders(Array.isArray(folders) ? folders : []);
+  return { ok: true };
+});
+
+ipcMain.handle('show-in-explorer', async (_event, filePath) => {
+  if (!filePath || typeof filePath !== 'string') return { ok: false };
+  try {
+    const resolved = path.resolve(filePath);
+    if (fs.existsSync(resolved)) {
+      if (fs.statSync(resolved).isDirectory()) {
+        await shell.openPath(resolved);
+      } else {
+        shell.showItemInFolder(resolved);
+      }
+      return { ok: true };
+    }
+    const parent = path.dirname(resolved);
+    if (fs.existsSync(parent)) {
+      await shell.openPath(parent);
+      return { ok: true };
+    }
+    return { ok: false };
+  } catch (err) {
+    console.error('show-in-explorer failed:', err);
+    return { ok: false };
+  }
+});
+
+async function walkDirAsync(dir, filelist = []) {
+  const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const filepath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await walkDirAsync(filepath, filelist);
+    } else {
+      filelist.push(filepath);
+    }
+  }
+  return filelist;
+}
+
 // IPC Handler to scan directory
 ipcMain.handle('scan-directory', async (event, dirPath) => {
   try {
     const fullPath = path.resolve(dirPath);
     if (!fs.existsSync(fullPath)) return [];
-    
-    const walkSync = (dir, filelist = []) => {
-      const files = fs.readdirSync(dir);
-      for (const file of files) {
-        const filepath = path.join(dir, file);
-        if (fs.statSync(filepath).isDirectory()) {
-          filelist = walkSync(filepath, filelist);
-        } else {
-          filelist.push(filepath);
-        }
-      }
-      return filelist;
-    };
 
-    const allFiles = walkSync(fullPath);
-    
+    const allFiles = await walkDirAsync(fullPath);
+
     const mediaFiles = allFiles.filter(filepath => {
       const ext = path.extname(filepath).toLowerCase();
       return ['.mp4', '.mkv', '.avi', '.mov', '.webm'].includes(ext);
     });
-    
+
     return mediaFiles.map(filepath => {
       const file = path.basename(filepath);
       const dir = path.dirname(filepath);
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(filepath).mtimeMs;
+      } catch {
+        mtimeMs = 0;
+      }
       // Clean up pirate group tags like [AnimePahe], remove extension, and replace underscores with spaces
       let cleanName = file.replace(/\[.*?\]/g, '').trim(); // Remove brackets
       cleanName = path.basename(cleanName, path.extname(cleanName)); // Remove extension
@@ -214,7 +301,8 @@ ipcMain.handle('scan-directory', async (event, dirPath) => {
         folderName: dir !== fullPath ? path.basename(dir) : undefined,
         localPoster,
         localFanart,
-        localNfoContent
+        localNfoContent,
+        mtimeMs,
       };
     });
   } catch (error) {

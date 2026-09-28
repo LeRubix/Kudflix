@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
-const DISPLAY_MS = 1400;
-const FADE_MS = 400;
+const DISPLAY_MS = 1000;
+const FADE_MS = 200;
 
 export function StartupScreen({ onComplete, appName, accentColor }: { onComplete: () => void; appName: string; accentColor: string }) {
   const [fading, setFading] = useState(false);

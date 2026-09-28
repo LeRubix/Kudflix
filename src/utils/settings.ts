@@ -1,5 +1,11 @@
 import type { Settings } from '../components/SettingsModal';
 
+export const MAX_APP_NAME_LENGTH = 50;
+
+export function truncateAppName(name: string): string {
+  return name.slice(0, MAX_APP_NAME_LENGTH);
+}
+
 const DEFAULT_SETTINGS: Settings = {
   accentColor: '#E50914',
   wallpaperPath: '',
@@ -13,6 +19,8 @@ const DEFAULT_SETTINGS: Settings = {
   skipProfilePicker: false,
   defaultProfileId: null,
   compactLibraryButton: false,
+  appIcon: 'default' as const,
+  autoSyncLibrary: true,
 };
 
 export function loadSettings(): Settings {
@@ -32,7 +40,7 @@ export function loadSettings(): Settings {
         accentColor: accentColor === '#cf3f4c' ? '#E50914' : accentColor,
         wallpaperPath: parsed.wallpaperPath ?? '',
         overlayOpacity: parsed.overlayOpacity ?? DEFAULT_SETTINGS.overlayOpacity,
-        appName: parsed.appName ?? DEFAULT_SETTINGS.appName,
+        appName: truncateAppName(parsed.appName ?? DEFAULT_SETTINGS.appName),
         uiScale: parsed.uiScale ?? DEFAULT_SETTINGS.uiScale,
         useExternalPlayer: parsed.useExternalPlayer ?? false,
         externalPlayerPath: parsed.externalPlayerPath ?? '',
@@ -41,6 +49,8 @@ export function loadSettings(): Settings {
         skipProfilePicker: parsed.skipProfilePicker ?? false,
         defaultProfileId: parsed.defaultProfileId ?? null,
         compactLibraryButton: parsed.compactLibraryButton ?? DEFAULT_SETTINGS.compactLibraryButton,
+        appIcon: parsed.appIcon === 'alternate' ? 'alternate' : 'default',
+        autoSyncLibrary: parsed.autoSyncLibrary ?? DEFAULT_SETTINGS.autoSyncLibrary,
       };
     }
 
@@ -55,5 +65,7 @@ export function loadSettings(): Settings {
 }
 
 export function saveSettings(settings: Settings): void {
-  localStorage.setItem('netflix_settings', JSON.stringify(settings));
+  const json = JSON.stringify(settings);
+  if (localStorage.getItem('netflix_settings') === json) return;
+  localStorage.setItem('netflix_settings', json);
 }

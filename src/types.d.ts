@@ -83,11 +83,17 @@ declare global {
 
   interface Window {
     electronAPI: {
-      scanDirectory: (dirPath: string) => Promise<{name: string, path: string, relativePath?: string, folderName?: string, localPoster?: string | null, localFanart?: string | null, localNfoContent?: string | null}[]>;
+      scanDirectory: (dirPath: string) => Promise<{name: string, path: string, relativePath?: string, folderName?: string, localPoster?: string | null, localFanart?: string | null, localNfoContent?: string | null, mtimeMs?: number}[]>;
+      setAppIcon: (variant: 'default' | 'alternate') => Promise<{ ok: boolean }>;
+      getAppIconPath: (variant: 'default' | 'alternate') => Promise<string | null>;
+      updateLibraryWatch: (folders: string[]) => Promise<{ ok: boolean }>;
+      onLibraryChanged: (callback: () => void) => () => void;
+      showInExplorer: (filePath: string) => Promise<{ ok: boolean }>;
       selectFolder: () => Promise<string | null>;
       selectFolders: () => Promise<string[]>;
       selectFile: () => Promise<string | null>;
       cacheProfileImage: () => Promise<string | null>;
+      selectWallpaperImage: () => Promise<string | null>;
       playInExternalPlayer: (playerPath: string, videoPath: string) => Promise<void>;
       probeMedia: (videoPath: string) => Promise<{ audioCodec: string | null; hasAudio: boolean | null }>;
       probeTracks: (videoPath: string) => Promise<{ audio: ProbeTrack[]; subtitles: ProbeTrack[] }>;

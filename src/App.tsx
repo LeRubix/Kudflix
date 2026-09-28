@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
-import { toBasicFile, enrichLibraryInBackground, mergeEnrichedFiles } from './utils/libraryLoader';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { enrichLibraryInBackground, mergeEnrichedFiles, buildOptimizedEnrichQueue } from './utils/libraryLoader';
+import { scanAllFolders, diffLibrary, mergeLibrarySync, pruneRemovedPaths } from './utils/librarySync';
+import { runInitialScanOnce, resetScanSession } from './utils/scanSession';
 import { Play, Info, FolderSearch, Settings as SettingsIcon, Search, Volume2, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SettingsModal } from './components/SettingsModal';
@@ -29,6 +31,7 @@ export default function App() {
 
   const [files, setFiles] = useState<LocalFile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [librarySyncing, setLibrarySyncing] = useState(false);
   const [playingVideo, setPlayingVideo] = useState<LocalFile | null>(null);
   const [infoVideo, setInfoVideo] = useState<LocalFile | null>(null);
   const [showStartup, setShowStartup] = useState(true);
@@ -40,8 +43,22 @@ export default function App() {
   const [settings, setSettings] = useState(loadSettings);
 
   const enrichGenRef = useRef(0);
+  const activeProfileRef = useRef(activeProfile);
+  const filesRef = useRef(files);
+  activeProfileRef.current = activeProfile;
+  filesRef.current = files;
   const [progresses, setProgresses] = useState<Record<string, number>>({});
   const [overrideTick, setOverrideTick] = useState(0);
+
+  const getInProgressPaths = (profileId: string | null): Set<string> => {
+    if (!profileId) return new Set();
+    try {
+      const prog = JSON.parse(localStorage.getItem(`netflix_progress_${profileId}`) || '{}') as Record<string, number>;
+      return new Set(Object.entries(prog).filter(([, v]) => v > 5).map(([p]) => p));
+    } catch {
+      return new Set();
+    }
+  };
 
   useEffect(() => {
     if (activeProfile) {
@@ -52,6 +69,36 @@ export default function App() {
         setProgresses({});
       }
     }
+  }, [activeProfile]);
+
+  // Enrich continue-watching episode thumbnails when a profile is selected
+  useEffect(() => {
+    if (!activeProfile) return;
+    const paths = getInProgressPaths(activeProfile);
+    if (paths.size === 0) return;
+
+    const queue = filesRef.current
+      .filter((f) => f.category && paths.has(f.path) && (!f.thumbnail || !f.duration))
+      .map((f) => ({
+        file: {
+          name: f.name,
+          path: f.path,
+          relativePath: f.relativePath,
+          folderName: f.folderName,
+          localPoster: f.localPoster,
+          localFanart: f.localFanart,
+          localNfoContent: f.localNfoContent,
+          mtimeMs: f.dateModified,
+        },
+        category: f.category as 'movie' | 'tv',
+      }));
+    if (queue.length === 0) return;
+
+    const gen = ++enrichGenRef.current;
+    enrichLibraryInBackground(queue, (batch) => {
+      if (gen !== enrichGenRef.current) return;
+      setFiles((prev) => mergeEnrichedFiles(prev, batch));
+    }).catch((err) => console.error('Priority enrich failed:', err));
   }, [activeProfile]);
 
   const tryAutoSignIn = () => {
@@ -79,14 +126,25 @@ export default function App() {
     document.documentElement.style.setProperty('--theme-overlay-opacity', settings.overlayOpacity.toString());
     
     if (settings.wallpaperPath) {
-      const formattedPath = `file:///${settings.wallpaperPath.replace(/\\/g, '/')}`;
+      const wp = settings.wallpaperPath;
+      const formattedPath = wp.startsWith('file://')
+        ? wp
+        : `file:///${wp.replace(/\\/g, '/')}`;
       document.documentElement.style.setProperty('--theme-wallpaper', `url('${formattedPath}')`);
     } else {
       document.documentElement.style.removeProperty('--theme-wallpaper');
     }
     
     saveSettings(settings);
+    window.electronAPI?.setAppIcon?.(settings.appIcon ?? 'default');
   }, [settings]);
+
+  useEffect(() => {
+    window.electronAPI?.updateLibraryWatch?.([
+      ...settings.movieFolders,
+      ...settings.tvFolders,
+    ]);
+  }, [settings.movieFolders, settings.tvFolders]);
 
   const handleUpdateVideo = (path: string, override: MediaOverride) => {
     saveMediaOverride(path, override);
@@ -119,7 +177,7 @@ export default function App() {
     });
   };
 
-  const scanLibrary = async () => {
+  const scanLibrary = useCallback(async (incremental = false) => {
     const hasFolders = settings.movieFolders.length > 0 || settings.tvFolders.length > 0;
     if (!hasFolders) return;
 
@@ -127,38 +185,56 @@ export default function App() {
       alert("Run this inside Electron!");
       return;
     }
-    setLoading(true);
-    const gen = ++enrichGenRef.current;
 
-    try {
-      const [movieResults, tvResults] = await Promise.all([
-        Promise.all(settings.movieFolders.map(f => window.electronAPI.scanDirectory(f))),
-        Promise.all(settings.tvFolders.map(f => window.electronAPI.scanDirectory(f))),
-      ]);
+    const execute = async () => {
+      setLoading(true);
+      setLibrarySyncing(true);
+      const gen = ++enrichGenRef.current;
 
-      const basicFiles: LocalFile[] = [
-        ...movieResults.flat().map(f => toBasicFile(f, 'movie')),
-        ...tvResults.flat().map(f => toBasicFile(f, 'tv')),
-      ];
+      try {
+        const { basicFiles, enrichQueue } = await scanAllFolders(settings);
+        const priorityPaths = getInProgressPaths(activeProfileRef.current);
 
-      setFiles(basicFiles);
-      setLoading(false);
+        if (incremental) {
+          setFiles((prev) => {
+            const diff = diffLibrary(prev, basicFiles);
+            if (diff.added.length === 0 && diff.removedPaths.length === 0) {
+              return prev;
+            }
+            pruneRemovedPaths(diff.removedPaths);
+            const merged = mergeLibrarySync(prev, diff.added, diff.removedPaths);
+            const addedPaths = new Set(diff.added.map((f) => f.path));
+            const newEnrichQueue = enrichQueue.filter((item) => addedPaths.has(item.file.path));
+            const optimized = buildOptimizedEnrichQueue(newEnrichQueue, priorityPaths, merged);
+            if (optimized.length > 0) {
+              enrichLibraryInBackground(optimized, (batch) => {
+                if (gen !== enrichGenRef.current) return;
+                setFiles((current) => mergeEnrichedFiles(current, batch));
+              }).catch((err) => console.error('Background enrich failed:', err));
+            }
+            return merged;
+          });
+        } else {
+          setFiles(basicFiles);
+          const optimized = buildOptimizedEnrichQueue(enrichQueue, priorityPaths, basicFiles);
+          enrichLibraryInBackground(optimized, (batch) => {
+            if (gen !== enrichGenRef.current) return;
+            setFiles((prev) => mergeEnrichedFiles(prev, batch));
+          }).catch((err) => console.error('Background enrich failed:', err));
+        }
+      } catch (err) {
+        console.error(err);
+        if (!incremental) setFiles([]);
+      } finally {
+        setLoading(false);
+        setLibrarySyncing(false);
+      }
+    };
 
-      const enrichQueue = [
-        ...movieResults.flat().map(file => ({ file, category: 'movie' as const })),
-        ...tvResults.flat().map(file => ({ file, category: 'tv' as const })),
-      ];
-
-      enrichLibraryInBackground(enrichQueue, (batch) => {
-        if (gen !== enrichGenRef.current) return;
-        setFiles(prev => mergeEnrichedFiles(prev, batch));
-      }).catch(err => console.error('Background enrich failed:', err));
-    } catch (err) {
-      console.error(err);
-      setFiles([]);
-      setLoading(false);
-    }
-  };
+    if (incremental) return execute();
+    const folderKey = settings.movieFolders.join('\0') + '\0' + settings.tvFolders.join('\0');
+    return runInitialScanOnce(folderKey, execute);
+  }, [settings]);
 
   const openLibrarySettings = () => {
     setSettingsTab('library');
@@ -170,19 +246,29 @@ export default function App() {
   const loadedLibraryKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (showStartup || !activeProfile) return;
-
     if (!hasLibrary) {
       setFiles([]);
       loadedLibraryKeyRef.current = null;
+      resetScanSession();
       return;
     }
 
-    // Scan once per folder configuration, switching profiles must not regenerate thumbnails
+    // Scan once per folder configuration; start before profile pick so thumbnails load in background
     if (loadedLibraryKeyRef.current === libraryFolderKey) return;
     loadedLibraryKeyRef.current = libraryFolderKey;
-    scanLibrary();
-  }, [libraryFolderKey, hasLibrary, showStartup, activeProfile]);
+    enrichGenRef.current += 1;
+    scanLibrary(false);
+  }, [libraryFolderKey, hasLibrary, scanLibrary]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onLibraryChanged) return;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    return window.electronAPI.onLibraryChanged(() => {
+      if (!settings.autoSyncLibrary) return;
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => scanLibrary(true), 500);
+    });
+  }, [settings.autoSyncLibrary, scanLibrary]);
 
   const playInExternal = (video: LocalFile) => {
     if (settings.externalPlayerPath && window.electronAPI?.playInExternalPlayer) {
@@ -607,11 +693,11 @@ export default function App() {
             )}
             
             {(activeTab === 'home' || activeTab === 'tv') && folders.length > 0 && (
-              <ContentRow title="Series" videos={folders} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable={activeTab === 'tv'} />
+              <ContentRow title="Series" videos={folders} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable />
             )}
             
             {(activeTab === 'home' || activeTab === 'movies') && movies.length > 0 && (
-              <ContentRow title="Movies" videos={movies} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable={activeTab === 'movies'} />
+              <ContentRow title="Movies" videos={movies} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable />
             )}
             
             {collections.map(c => (
@@ -660,6 +746,8 @@ export default function App() {
         <SettingsModal 
           currentSettings={settings}
           initialTab={settingsTab}
+          onScanLibrary={() => scanLibrary(true)}
+          librarySyncing={librarySyncing}
           onSave={(newSettings) => {
             setSettings(newSettings);
             setShowSettings(false);

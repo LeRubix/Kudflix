@@ -1,12 +1,13 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Play, Plus, ChevronLeft, ChevronRight, X, Edit2, Save } from 'lucide-react';
+import { Play, Plus, ChevronLeft, ChevronRight, X, Edit2, Save, Shuffle, FolderOpen } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getTMDBMetadata, type TMDBResult } from '../utils/tmdb';
 import type { MediaOverride } from '../utils/mediaOverrides';
 import { useImageBrightness } from '../hooks/useImageBrightness';
 import { EpisodeRow } from './EpisodeRow';
 import { cardProgress, resolvePlayTarget } from '../utils/grouping';
+import { formatDurationShort } from '../utils/subtitles';
 
 // --- Types ---
 export interface LocalFile {
@@ -29,6 +30,16 @@ export interface LocalFile {
 
 function getDisplayTitle(video: LocalFile) {
   return video.meta?.title || video.name;
+}
+
+function getExplorerPath(video: LocalFile): string | null {
+  if (video.isFolder && video.folderFiles?.length) {
+    const epPath = video.folderFiles[0].path;
+    const sep = Math.max(epPath.lastIndexOf('\\'), epPath.lastIndexOf('/'));
+    return sep >= 0 ? epPath.slice(0, sep) : epPath;
+  }
+  if (video.path.startsWith('folder://')) return null;
+  return video.path;
 }
 
 // --- Thumbnail title with Bebas Neue + adaptive contrast ---
@@ -55,6 +66,17 @@ function ThumbnailTitle({ title, imageSrc, className = '' }: { title: string; im
 }
 
 // --- Grid View Modal ---
+type GridSort = 'az' | 'za' | 'year-new' | 'year-old' | 'recent';
+
+function getSortTitle(video: LocalFile) {
+  return (video.meta?.title || video.name).toLowerCase();
+}
+
+function getSortYear(video: LocalFile) {
+  const y = video.meta?.year;
+  return y ? parseInt(y, 10) || 0 : 0;
+}
+
 export function GridViewModal({
   title,
   videos,
@@ -62,6 +84,8 @@ export function GridViewModal({
   onPlay,
   onInfo,
   progresses = {},
+  sortable = false,
+  showRandomPlay = false,
 }: {
   title: string;
   videos: LocalFile[];
@@ -69,7 +93,38 @@ export function GridViewModal({
   onPlay: (v: LocalFile) => void;
   onInfo: (v: LocalFile) => void;
   progresses?: Record<string, number>;
+  sortable?: boolean;
+  showRandomPlay?: boolean;
 }) {
+  const [sort, setSort] = useState<GridSort>('az');
+
+  const sortedVideos = useMemo(() => {
+    if (!sortable) return videos;
+    const list = [...videos];
+    switch (sort) {
+      case 'az':
+        return list.sort((a, b) => getSortTitle(a).localeCompare(getSortTitle(b)));
+      case 'za':
+        return list.sort((a, b) => getSortTitle(b).localeCompare(getSortTitle(a)));
+      case 'year-new':
+        return list.sort((a, b) => getSortYear(b) - getSortYear(a));
+      case 'year-old':
+        return list.sort((a, b) => getSortYear(a) - getSortYear(b));
+      case 'recent':
+        return list.sort((a, b) => (b.dateModified ?? 0) - (a.dateModified ?? 0));
+      default:
+        return list;
+    }
+  }, [videos, sort, sortable]);
+
+  const playRandom = () => {
+    const movies = sortedVideos.filter((v) => !v.isFolder);
+    if (movies.length === 0) return;
+    const pick = movies[Math.floor(Math.random() * movies.length)];
+    onClose();
+    onPlay(pick);
+  };
+
   useEffect(() => {
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = 'auto'; };
@@ -91,7 +146,7 @@ export function GridViewModal({
           className="flex flex-col flex-1 overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="flex items-center justify-between px-10 pb-6 shrink-0">
+          <div className="flex items-center justify-between px-10 pb-4 shrink-0">
             <h2 className="text-3xl md:text-4xl font-bold text-white">{title}</h2>
             <button
               onClick={onClose}
@@ -101,9 +156,35 @@ export function GridViewModal({
             </button>
           </div>
 
+          {(sortable || showRandomPlay) && (
+            <div className="flex items-center gap-4 px-10 pb-6 shrink-0">
+              {sortable && (
+                <select
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as GridSort)}
+                  className="bg-[#242424] text-white border border-gray-600 rounded px-4 py-2 text-sm font-semibold outline-none focus:border-white transition"
+                >
+                  <option value="az">A–Z</option>
+                  <option value="za">Z–A</option>
+                  <option value="year-new">Newest year</option>
+                  <option value="year-old">Oldest year</option>
+                  <option value="recent">Recently added</option>
+                </select>
+              )}
+              {showRandomPlay && (
+                <button
+                  onClick={playRandom}
+                  className="flex items-center gap-2 bg-white text-black px-4 py-2 rounded font-bold text-sm hover:bg-white/80 transition"
+                >
+                  <Shuffle className="w-4 h-4" /> Play random
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto px-10 pb-10">
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-              {videos.map((video, i) => (
+              {sortedVideos.map((video, i) => (
                 <VideoCard
                   key={`${video.path}-${i}`}
                   video={video}
@@ -208,6 +289,8 @@ export function DetailModal({
   }, [subfolderNames, selectedSubfolder]);
 
   const episodesToRender = subfolders[selectedSubfolder] || [];
+  const episodeCount = video.folderFiles?.length ?? 0;
+  const totalRuntime = video.folderFiles?.reduce((sum, ep) => sum + (ep.duration ?? 0), 0) ?? 0;
 
   return (
     <AnimatePresence>
@@ -276,10 +359,16 @@ export function DetailModal({
           {/* Info Section */}
           <div className="p-10 flex flex-col md:flex-row gap-12">
             <div className="flex-1">
-              <div className="flex items-center gap-3 text-sm text-gray-400 font-semibold mb-6">
+              <div className="flex items-center gap-3 text-sm text-gray-400 font-semibold mb-6 flex-wrap">
                 <span className="text-green-400">{tmdb?.rating ? `${Math.round(tmdb.rating * 10)}% Match` : '98% Match'}</span>
                 {(video.meta?.year || tmdb?.year) && (
                   <span>{video.meta?.year || tmdb?.year}</span>
+                )}
+                {video.isFolder && episodeCount > 0 && (
+                  <span>{episodeCount} {episodeCount === 1 ? 'Episode' : 'Episodes'}</span>
+                )}
+                {!video.isFolder && video.duration != null && video.duration > 0 && (
+                  <span>{formatDurationShort(video.duration)}</span>
                 )}
                 <span className="border border-gray-600 px-1.5 py-0.5 rounded text-xs">HD</span>
               </div>
@@ -366,8 +455,23 @@ export function DetailModal({
             
             <div className="w-full md:w-1/3 text-sm text-gray-400 space-y-6">
               <div>
-                <span className="text-gray-500 block mb-1">File Path:</span> 
-                <div className="text-gray-300 break-all font-mono text-xs bg-black/20 p-2 rounded">{video.path}</div>
+                <span className="text-gray-500 block mb-1">File Path:</span>
+                <div className="flex items-start gap-2 bg-black/20 p-2 rounded">
+                  <div className="text-gray-300 break-all font-mono text-xs flex-1 min-w-0">
+                    {getExplorerPath(video) ?? video.path}
+                  </div>
+                  {getExplorerPath(video) && (
+                    <button
+                      type="button"
+                      onClick={() => window.electronAPI?.showInExplorer?.(getExplorerPath(video)!)}
+                      className="flex-shrink-0 p-1.5 rounded hover:bg-white/10 text-gray-400 hover:text-white transition"
+                      aria-label="Show in file explorer"
+                      title="Show in file explorer"
+                    >
+                      <FolderOpen className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
               <div>
                 <span className="text-gray-500 block mb-1">Genres:</span>
@@ -379,6 +483,18 @@ export function DetailModal({
                 <div>
                   <span className="text-gray-500 block mb-1">Year:</span>
                   <span className="text-gray-300">{video.meta.year}</span>
+                </div>
+              )}
+              {video.isFolder && totalRuntime > 0 && (
+                <div>
+                  <span className="text-gray-500 block mb-1">Total Runtime:</span>
+                  <span className="text-gray-300">{formatDurationShort(totalRuntime)}</span>
+                </div>
+              )}
+              {!video.isFolder && video.duration != null && video.duration > 0 && (
+                <div>
+                  <span className="text-gray-500 block mb-1">Runtime:</span>
+                  <span className="text-gray-300">{formatDurationShort(video.duration)}</span>
                 </div>
               )}
             </div>
@@ -423,15 +539,18 @@ export function VideoCard({
       ? tmdb.backdrop
       : video.thumbnail || video.localFanart || video.localPoster || undefined;
 
+  const playTarget = resolvePlayTarget(video);
+  const useStaticPreview = video.isFolder && !video.resumeEpisode;
+
   const handleMouseEnter = () => {
-    if (video.isFolder || isGrid) return;
+    if (isGrid) return;
     hoverTimeoutRef.current = window.setTimeout(() => {
       setIsHovered(true);
     }, 400);
   };
 
   const handleMouseLeave = () => {
-    if (video.isFolder || isGrid) return;
+    if (isGrid) return;
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     setIsHovered(false);
   };
@@ -464,7 +583,7 @@ export function VideoCard({
         {/* Progress Bar */}
         {progress !== undefined && progress > 0 && (
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-600">
-            <div className="h-full bg-red-600" style={{ width: `${progress * 100}%` }} />
+            <div className="h-full bg-accent" style={{ width: `${progress * 100}%` }} />
           </div>
         )}
       </div>
@@ -480,19 +599,33 @@ export function VideoCard({
             className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[25%] w-full bg-[#181818] rounded-md shadow-[0_10px_40px_rgba(0,0,0,0.8)] z-[100] overflow-hidden border border-gray-700/50"
             style={{ transformOrigin: 'bottom center' }}
           >
-            <div className="w-full aspect-video relative cursor-pointer" onClick={(e) => { e.stopPropagation(); onPlay(resolvePlayTarget(video)); }}>
-              <video 
-                src={`file:///${resolvePlayTarget(video).path.replace(/\\/g, '/')}`} 
-                autoPlay 
-                muted 
-                loop 
-                className="w-full h-full object-cover"
-                onLoadedMetadata={(e) => {
-                  const v = e.target as HTMLVideoElement;
-                  if (video.duration) v.currentTime = Math.floor(video.duration / 2); // Start playing from the middle!
-                }}
-              />
-              {/* Play Overlay */}
+            <div className="w-full aspect-video relative cursor-pointer" onClick={(e) => { e.stopPropagation(); onPlay(playTarget); }}>
+              {useStaticPreview ? (
+                tmdb?.backdrop || video.thumbnail ? (
+                  <img
+                    src={tmdb?.backdrop || video.thumbnail}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full bg-gray-800 flex items-center justify-center p-4 text-center font-bebas text-gray-300">
+                    {getDisplayTitle(video)}
+                  </div>
+                )
+              ) : (
+                <video
+                  src={`file:///${playTarget.path.replace(/\\/g, '/')}`}
+                  autoPlay
+                  muted
+                  loop
+                  className="w-full h-full object-cover"
+                  onLoadedMetadata={(e) => {
+                    const v = e.target as HTMLVideoElement;
+                    const dur = playTarget.duration ?? video.duration;
+                    if (dur) v.currentTime = Math.floor(dur / 2);
+                  }}
+                />
+              )}
               <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 hover:opacity-100 transition">
                 <Play className="w-10 h-10 text-white fill-white drop-shadow-lg" />
               </div>
@@ -501,7 +634,7 @@ export function VideoCard({
             <div className="p-4 flex flex-col gap-3">
               <div className="flex justify-between items-center">
                 <div className="flex gap-2">
-                  <button onClick={(e) => { e.stopPropagation(); onPlay(resolvePlayTarget(video)); }} className="w-8 h-8 bg-white rounded-full flex items-center justify-center hover:bg-gray-200 transition">
+                  <button onClick={(e) => { e.stopPropagation(); onPlay(playTarget); }} className="w-8 h-8 bg-white rounded-full flex items-center justify-center hover:bg-gray-200 transition">
                     <Play className="w-4 h-4 fill-black text-black ml-0.5" />
                   </button>
                   <button className="w-8 h-8 bg-transparent border-2 border-gray-500 rounded-full flex items-center justify-center hover:border-white transition text-white">
@@ -513,13 +646,27 @@ export function VideoCard({
                 </button>
               </div>
 
-              <div className="flex items-center gap-2 text-xs text-white font-semibold">
-                <span className="text-green-400">98% Match</span>
+              <div className="flex items-center gap-2 text-xs text-white font-semibold flex-wrap">
+                {!video.isFolder && <span className="text-green-400">98% Match</span>}
+                {(video.meta?.year || tmdb?.year) && (
+                  <span className="text-gray-400">{video.meta?.year || tmdb?.year}</span>
+                )}
+                {video.isFolder && video.folderFiles && video.folderFiles.length > 0 && (
+                  <span className="text-gray-400">{video.folderFiles.length} Episodes</span>
+                )}
+                {!video.isFolder && video.duration != null && video.duration > 0 && (
+                  <span className="text-gray-400">{formatDurationShort(video.duration)}</span>
+                )}
                 <span className="border border-gray-600 px-1 rounded text-gray-400">HD</span>
               </div>
               <div className="text-xs text-white font-bold line-clamp-2">
-                {video.meta?.title || video.name}
+                {getDisplayTitle(video)}
               </div>
+              {(video.meta?.genre || tmdb?.synopsis) && (
+                <div className="text-xs text-gray-400 line-clamp-2">
+                  {video.meta?.genre || tmdb?.synopsis}
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -585,6 +732,7 @@ export function ContentRow({
   const [showLeftArrow, setShowLeftArrow] = useState(false);
   const [showRightArrow, setShowRightArrow] = useState(true);
   const [showGrid, setShowGrid] = useState(false);
+  const [titleHovered, setTitleHovered] = useState(false);
 
   const handleScroll = () => {
     if (rowRef.current) {
@@ -612,15 +760,23 @@ export function ContentRow({
 
   return (
     <div className="mb-8 relative group z-20 hover:z-50">
-      <h2
-        className={`text-xl md:text-2xl font-bold text-gray-200 mb-2 px-10 transition flex items-center gap-2 ${expandable ? 'hover:text-white cursor-pointer' : ''}`}
+      <div
+        className={`relative z-30 flex items-center gap-2 mb-2 px-10 py-2 w-full ${expandable ? 'cursor-pointer' : ''}`}
+        onMouseEnter={() => setTitleHovered(true)}
+        onMouseLeave={() => setTitleHovered(false)}
         onClick={() => expandable && setShowGrid(true)}
       >
-        {title}
+        <h2 className={`text-xl md:text-2xl font-bold transition ${titleHovered && expandable ? 'text-white' : 'text-gray-200'}`}>
+          {title}
+        </h2>
         {expandable && (
-          <ChevronRight className="w-5 h-5 text-transparent group-hover:text-white transition-all translate-x-[-10px] group-hover:translate-x-0" />
+          <ChevronRight
+            className={`w-5 h-5 shrink-0 text-white transition-all duration-200 ${
+              titleHovered ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-1'
+            }`}
+          />
         )}
-      </h2>
+      </div>
 
       {showGrid && (
         <GridViewModal
@@ -630,13 +786,15 @@ export function ContentRow({
           onPlay={(v) => { setShowGrid(false); onPlay(v); }}
           onInfo={(v) => { setShowGrid(false); onInfo(v); }}
           progresses={progresses}
+          sortable={expandable}
+          showRandomPlay={title === 'Movies'}
         />
       )}
       
       {/* Left Arrow */}
       {showLeftArrow && (
         <div 
-          className="absolute left-0 top-[10%] bottom-[10%] w-10 md:w-12 bg-black/50 z-40 flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition hover:bg-black/80 rounded-r-md"
+          className="absolute left-0 top-[10%] bottom-[10%] w-10 md:w-12 bg-black/50 z-40 flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition hover:bg-black/80 rounded-r-md pointer-events-auto"
           onClick={() => scroll('left')}
         >
           <ChevronLeft className="w-8 h-8 text-white hover:scale-125 transition-transform" />
@@ -646,7 +804,7 @@ export function ContentRow({
       {/* Right Arrow */}
       {showRightArrow && (
         <div 
-          className="absolute right-0 top-[10%] bottom-[10%] w-10 md:w-12 bg-black/50 z-40 flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition hover:bg-black/80 rounded-l-md"
+          className="absolute right-0 top-[10%] bottom-[10%] w-10 md:w-12 bg-black/50 z-40 flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition hover:bg-black/80 rounded-l-md pointer-events-auto"
           onClick={() => scroll('right')}
         >
           <ChevronRight className="w-8 h-8 text-white hover:scale-125 transition-transform" />
@@ -656,14 +814,14 @@ export function ContentRow({
       <div 
         ref={rowRef}
         onScroll={handleScroll}
-        className={`flex overflow-x-auto overflow-y-hidden px-10 py-32 -my-28 hide-scrollbar scroll-smooth ${isTop10 ? 'gap-5' : 'gap-2'}`}
+        className={`relative z-20 flex overflow-x-auto overflow-y-hidden px-10 pt-32 pb-16 -mt-28 hide-scrollbar scroll-smooth pointer-events-none ${isTop10 ? 'gap-5' : 'gap-2'}`}
       >
         {videos.map((video, i) => {
           const rank = i + 1;
           return (
             <div
               key={`${video.path}-${i}`}
-              className="relative flex items-end flex-shrink-0 hover:z-50"
+              className="relative flex items-end flex-shrink-0 hover:z-50 pointer-events-auto"
             >
               {isTop10 && <Top10RankNumber rank={rank} />}
               <div
