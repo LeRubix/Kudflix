@@ -6,19 +6,20 @@ A fully offline, Netflix-style desktop media player for your local video collect
 
 ### 1. Splash Screen
 A clean and immersive startup experience featuring the Kudflix branding.
-![Startup](screenshots/startup.png)
+![Profiles](screenshots/profiles.png)
 
 ### 2. Who's Watching?
 Manage your local viewing profiles, complete with custom themes and anime avatars.
-![Profiles](screenshots/profiles.png)
+![Choose Avatar](screenshots/choose_avatar.png)
 
 ### 3. Choose Avatar
 Select from a curated grid of Key VN character avatars or upload your own custom image.
-![Choose Avatar](screenshots/choose_avatar.png)
+![Home Screen](screenshots/home.png)
 
 ### 4. Home Screen & Hero Banner
 Your local media library displayed in a sleek, Netflix-style layout, featuring a dynamic hero video preview with Ken Burns animation effects.
-![Home Screen](screenshots/home.png)
+![Startup](screenshots/startup.png)
+
 
 ### 5. Quick Hover Actions
 Instantly preview episodes, check progress, and launch playback seamlessly from hover cards.
@@ -38,13 +39,7 @@ Instantly preview episodes, check progress, and launch playback seamlessly from 
 
 ## Supported Formats
 
-Kudflix natively supports playing formats supported by Chromium:
-- `.mp4`
-- `.webm`
-- `.mkv` (if encoded with h264/avc)
-- `.mov` (if encoded with h264/avc)
-
-*Note: For the best experience, ensure your local media is encoded in H.264 video with AAC audio.*
+Kudflix uses [MPV](https://github.com/mpv-player/mpv) for video/audio format support. MPV supports a wide range of formats and should work with any file you intend to use.
 
 ## How it works
 

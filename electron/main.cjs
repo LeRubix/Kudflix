@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, protocol, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { MpvController } = require('./mpvController.cjs');
 const { probeMediaAudio, probeTracks, findSubtitleFiles } = require('./mediaUtils.cjs');
 const { PlayerWindows, TITLE_STRIP_HEIGHT } = require('./playerWindows.cjs');
 const { LibraryWatcher } = require('./libraryWatcher.cjs');
+const appIcon = require('./appIcon.cjs');
 
 const isDev = !app.isPackaged;
 
@@ -13,16 +14,20 @@ let playerWindows = null;
 let playerSession = null;
 const mpvController = new MpvController();
 
-function getIconPath(variant) {
-  const name = variant === 'alternate' ? 'icon2.png' : 'icon.png';
-  return path.join(__dirname, '../build', name);
-}
+let currentIconVariant = 'default';
 
 function applyAppIcon(variant) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const iconPath = getIconPath(variant);
-  if (!fs.existsSync(iconPath)) return;
-  mainWindow.setIcon(nativeImage.createFromPath(iconPath));
+  currentIconVariant = variant;
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+
+  const image = appIcon.loadWindowIcon(variant);
+  if (!image) {
+    console.error('[icon] failed to load', appIcon.getIconPath(variant));
+    return false;
+  }
+
+  mainWindow.setIcon(image);
+  return true;
 }
 
 const libraryWatcher = new LibraryWatcher(() => {
@@ -86,8 +91,11 @@ function createWindow() {
       contextIsolation: true,
       webSecurity: false // allow loading local files
     },
-    icon: path.join(__dirname, '../build/icon.png')
+    icon: appIcon.loadWindowIcon(currentIconVariant) || appIcon.getIconPath('default'),
   });
+
+  // Windows can reset the taskbar icon while the window is being shown
+  mainWindow.once('ready-to-show', () => applyAppIcon(currentIconVariant));
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
@@ -113,6 +121,8 @@ app.on('before-quit', () => {
 });
 
 app.whenReady().then(() => {
+  currentIconVariant = appIcon.loadVariant(app);
+
   // Register custom protocol to load local video files
   protocol.registerFileProtocol('local', (request, callback) => {
     const url = request.url.replace('local://', '');
@@ -196,12 +206,17 @@ ipcMain.handle('select-wallpaper-image', async () => {
 });
 
 ipcMain.handle('set-app-icon', async (_event, variant) => {
-  applyAppIcon(variant === 'alternate' ? 'alternate' : 'default');
-  return { ok: true };
+  const resolved = appIcon.normalizeVariant(variant);
+  const windowIconOk = applyAppIcon(resolved);
+  appIcon.saveVariant(app, resolved);
+
+  const shortcutsUpdated = await appIcon.queueShortcutUpdate(app, resolved);
+
+  return { ok: windowIconOk, shortcutsUpdated };
 });
 
 ipcMain.handle('get-app-icon-path', async (_event, variant) => {
-  const iconPath = getIconPath(variant === 'alternate' ? 'alternate' : 'default');
+  const iconPath = appIcon.getIconPath(appIcon.normalizeVariant(variant));
   if (!fs.existsSync(iconPath)) return null;
   return `file:///${iconPath.replace(/\\/g, '/')}`;
 });

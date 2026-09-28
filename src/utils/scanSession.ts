@@ -1,4 +1,4 @@
-/** Module-level scan dedup — survives React StrictMode remounts in dev. */
+/** Module-level scan dedup, survives React StrictMode remounts in dev. */
 const scanState = {
   folderKey: '',
   promise: null as Promise<void> | null,

@@ -66,8 +66,14 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
     });
   }, []);
 
+  const applyAppIcon = (variant: 'default' | 'alternate') => {
+    window.electronAPI?.setAppIcon?.(variant);
+  };
+
   const handleSave = () => {
-    onSave({ ...settings, appName: truncateAppName(settings.appName) });
+    const next = { ...settings, appName: truncateAppName(settings.appName) };
+    applyAppIcon(next.appIcon ?? 'default');
+    onSave(next);
     onClose();
   };
 
@@ -376,7 +382,10 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                     <button
                       key={variant}
                       type="button"
-                      onClick={() => setSettings({ ...settings, appIcon: variant })}
+                      onClick={() => {
+                        setSettings({ ...settings, appIcon: variant });
+                        applyAppIcon(variant);
+                      }}
                       className={`flex flex-col items-center gap-2 p-3 rounded-lg border-2 transition ${
                         settings.appIcon === variant ? 'border-white bg-white/5' : 'border-gray-700 hover:border-gray-500'
                       }`}

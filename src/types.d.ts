@@ -84,7 +84,7 @@ declare global {
   interface Window {
     electronAPI: {
       scanDirectory: (dirPath: string) => Promise<{name: string, path: string, relativePath?: string, folderName?: string, localPoster?: string | null, localFanart?: string | null, localNfoContent?: string | null, mtimeMs?: number}[]>;
-      setAppIcon: (variant: 'default' | 'alternate') => Promise<{ ok: boolean }>;
+      setAppIcon: (variant: 'default' | 'alternate') => Promise<{ ok: boolean; shortcutsUpdated: boolean }>;
       getAppIconPath: (variant: 'default' | 'alternate') => Promise<string | null>;
       updateLibraryWatch: (folders: string[]) => Promise<{ ok: boolean }>;
       onLibraryChanged: (callback: () => void) => () => void;
