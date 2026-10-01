@@ -6,6 +6,7 @@ export interface MediaOverride {
   genre?: string;
   year?: string;
   disableTmdb?: boolean;
+  useSeriesThumbnailForEpisodes?: boolean;
 }
 
 const STORAGE_KEY = 'netflix_media_overrides';

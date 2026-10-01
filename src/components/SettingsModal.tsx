@@ -24,6 +24,7 @@ export interface Settings {
   appIcon: 'default' | 'alternate';
   autoSyncLibrary: boolean;
   customTmdbApiKey: string;
+  watchedIndicatorMode: 'always' | 'hover' | 'never';
 }
 
 const RECENT_COLORS = ['#003e8f', '#bc13fe', '#E50914', '#555555', '#7b4cff'];
@@ -50,6 +51,7 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
     appIcon: currentSettings.appIcon ?? 'default',
     autoSyncLibrary: currentSettings.autoSyncLibrary ?? true,
     customTmdbApiKey: currentSettings.customTmdbApiKey ?? '',
+    watchedIndicatorMode: currentSettings.watchedIndicatorMode ?? 'always',
   });
   const [activeTab, setActiveTab] = useState<'general' | 'library' | 'personalization' | 'profiles' | 'advanced'>(initialTab);
   const [isDefaultTmdbKeyMode, setIsDefaultTmdbKeyMode] = useState(
@@ -232,7 +234,11 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                   placeholder="e.g., JOHNFLIX"
                 />
                 <p className="text-xs text-gray-500 mt-2">
-                  Replaces the Netflix logo in the top corner. {settings.appName.length}/{MAX_APP_NAME_LENGTH} characters.
+                  Replaces the Netflix logo in the top corner.{' '}
+                  <span className={settings.appName.length >= MAX_APP_NAME_LENGTH ? 'text-accent font-semibold' : ''}>
+                    {settings.appName.length}/{MAX_APP_NAME_LENGTH}
+                  </span>{' '}
+                  characters.
                 </p>
               </div>
 
@@ -263,6 +269,27 @@ export function SettingsModal({ onClose, onSave, currentSettings, activeProfileI
                 >
                   <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${settings.compactLibraryButton ? 'translate-x-6' : ''}`} />
                 </button>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-300 mb-2">Watched indicator</label>
+                <select
+                  value={settings.watchedIndicatorMode}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      watchedIndicatorMode: e.target.value as Settings['watchedIndicatorMode'],
+                    })
+                  }
+                  className="bg-black/50 border border-gray-700 rounded-lg px-4 py-3 text-sm text-white outline-none w-full focus:border-accent transition"
+                >
+                  <option value="always">Always Show</option>
+                  <option value="hover">On Hover</option>
+                  <option value="never">Never Show</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-2">
+                  Controls the eye icon on watched thumbnails. Watched status is always tracked for filters and toggles.
+                </p>
               </div>
 
             </div>

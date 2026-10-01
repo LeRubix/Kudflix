@@ -2,6 +2,7 @@ import type { LocalFile } from '../components/NetflixUI';
 import type { Settings } from '../components/SettingsModal';
 import { toBasicFile } from './libraryLoader';
 import { hydrateFilesFromCache, deleteCachedMedia } from './thumbnailCache';
+import { pruneWatchedManual } from './watched';
 
 type ScannedFile = Parameters<typeof toBasicFile>[0];
 
@@ -72,6 +73,7 @@ export function pruneRemovedPaths(removedPaths: string[]) {
         }
         if (changed) localStorage.setItem(key, JSON.stringify(data));
       }
+      pruneWatchedManual(profile.id, removed);
     }
   } catch {
     // ignore parse errors

@@ -19,8 +19,16 @@ import { useTMDBDetails } from '../hooks/useTMDBDetails';
 import { getMediaOverride, isTmdbDisabled, type MediaOverride } from '../utils/mediaOverrides';
 import { useImageBrightness } from '../hooks/useImageBrightness';
 import { EpisodeRow } from './EpisodeRow';
+import { WatchedEyeIndicator } from './WatchedEyeIndicator';
+import type { Settings } from './SettingsModal';
 import { cardProgress, resolvePlayTarget } from '../utils/grouping';
 import { formatDurationShort } from '../utils/subtitles';
+import {
+  isWatched,
+  isSeriesWatched,
+  hasUnwatchedEpisode,
+  setManualWatched,
+} from '../utils/watched';
 
 // --- Types ---
 export interface LocalFile {
@@ -44,6 +52,15 @@ export interface LocalFile {
 
 function getDisplayTitle(video: LocalFile) {
   return video.meta?.title || video.name;
+}
+
+export function getVideoWatched(
+  video: LocalFile,
+  progresses: Record<string, number>,
+  profileId: string | null | undefined,
+): boolean {
+  if (video.isFolder) return isSeriesWatched(video, progresses, profileId);
+  return isWatched(video, progresses, profileId);
 }
 
 function getExplorerPath(video: LocalFile): string | null {
@@ -81,6 +98,7 @@ function ThumbnailTitle({ title, imageSrc, className = '' }: { title: string; im
 
 // --- Grid View Modal ---
 type GridSort = 'az' | 'za' | 'year-new' | 'year-old' | 'recent' | 'duration-short' | 'duration-long';
+type GridFilter = 'all' | 'unwatched' | 'watched';
 
 function getSortTitle(video: LocalFile) {
   return (video.meta?.title || video.name).toLowerCase();
@@ -107,6 +125,9 @@ export function GridViewModal({
   progresses = {},
   sortable = false,
   showRandomPlay = false,
+  activeProfileId,
+  mediaType,
+  watchedIndicatorMode = 'always',
 }: {
   title: string;
   videos: LocalFile[];
@@ -116,12 +137,28 @@ export function GridViewModal({
   progresses?: Record<string, number>;
   sortable?: boolean;
   showRandomPlay?: boolean;
+  activeProfileId?: string | null;
+  mediaType?: 'movie' | 'tv';
+  watchedIndicatorMode?: Settings['watchedIndicatorMode'];
 }) {
   const [sort, setSort] = useState<GridSort>('az');
+  const [filter, setFilter] = useState<GridFilter>('all');
 
   const sortedVideos = useMemo(() => {
-    if (!sortable) return videos;
-    const list = [...videos];
+    let list = [...videos];
+
+    if (activeProfileId && mediaType && filter !== 'all') {
+      list = list.filter((v) => {
+        if (mediaType === 'movie') {
+          const w = isWatched(v, progresses, activeProfileId);
+          return filter === 'watched' ? w : !w;
+        }
+        if (filter === 'watched') return isSeriesWatched(v, progresses, activeProfileId);
+        return hasUnwatchedEpisode(v, progresses, activeProfileId);
+      });
+    }
+
+    if (!sortable) return list;
     switch (sort) {
       case 'az':
         return list.sort((a, b) => getSortTitle(a).localeCompare(getSortTitle(b)));
@@ -140,7 +177,7 @@ export function GridViewModal({
       default:
         return list;
     }
-  }, [videos, sort, sortable]);
+  }, [videos, sort, sortable, filter, activeProfileId, mediaType, progresses]);
 
   const playRandom = () => {
     const movies = sortedVideos.filter((v) => !v.isFolder);
@@ -181,8 +218,8 @@ export function GridViewModal({
             </button>
           </div>
 
-          {(sortable || showRandomPlay) && (
-            <div className="flex items-center gap-4 px-10 pb-6 shrink-0">
+          {(sortable || showRandomPlay || (activeProfileId && mediaType)) && (
+            <div className="flex items-center gap-4 px-10 pb-6 shrink-0 flex-wrap">
               {sortable && (
                 <select
                   value={sort}
@@ -196,6 +233,17 @@ export function GridViewModal({
                   <option value="recent">Recently added</option>
                   <option value="duration-short">Shortest</option>
                   <option value="duration-long">Longest</option>
+                </select>
+              )}
+              {activeProfileId && mediaType && (
+                <select
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value as GridFilter)}
+                  className="bg-[#242424] text-white border border-gray-600 rounded px-4 py-2 text-sm font-semibold outline-none focus:border-white transition"
+                >
+                  <option value="all">All</option>
+                  <option value="unwatched">Unwatched</option>
+                  <option value="watched">Watched</option>
                 </select>
               )}
               {showRandomPlay && (
@@ -220,6 +268,8 @@ export function GridViewModal({
                     variant="grid"
                     enableHoverExpansion
                     progress={cardProgress(video, progresses)}
+                    watched={getVideoWatched(video, progresses, activeProfileId)}
+                    watchedIndicatorMode={watchedIndicatorMode}
                   />
                 </div>
               ))}
@@ -239,12 +289,22 @@ export function DetailModal({
   onPlay,
   onUpdate,
   onEpisodeEnriched,
+  progresses = {},
+  activeProfileId,
+  onWatchedChange,
+  watchedIndicatorMode = 'always',
+  watchedRevision = 0,
 }: {
   video: LocalFile;
   onClose: () => void;
   onPlay: (v: LocalFile) => void;
   onUpdate?: (path: string, override: MediaOverride) => void;
   onEpisodeEnriched?: (enriched: LocalFile[]) => void;
+  progresses?: Record<string, number>;
+  activeProfileId?: string | null;
+  onWatchedChange?: () => void;
+  watchedIndicatorMode?: Settings['watchedIndicatorMode'];
+  watchedRevision?: number;
 }) {
   const useLocalOnly = isTmdbDisabled(video);
   const tmdb = useTMDBDetails(video);
@@ -255,6 +315,7 @@ export function DetailModal({
     genre: video.meta?.genre || '',
     year: video.meta?.year || '',
     disableTmdb: getMediaOverride(video.path)?.disableTmdb ?? false,
+    useSeriesThumbnailForEpisodes: getMediaOverride(video.path)?.useSeriesThumbnailForEpisodes ?? false,
   });
 
   useEffect(() => {
@@ -264,6 +325,7 @@ export function DetailModal({
       genre: video.meta?.genre || '',
       year: video.meta?.year || '',
       disableTmdb: getMediaOverride(video.path)?.disableTmdb ?? false,
+      useSeriesThumbnailForEpisodes: getMediaOverride(video.path)?.useSeriesThumbnailForEpisodes ?? false,
     });
     setIsEditing(false);
   }, [video.path, video.meta?.title, video.meta?.description, video.meta?.genre, video.meta?.year, video.name, video.tmdbDisabled]);
@@ -275,10 +337,29 @@ export function DetailModal({
       genre: editForm.genre.trim() || undefined,
       year: editForm.year.trim() || undefined,
       disableTmdb: editForm.disableTmdb,
+      useSeriesThumbnailForEpisodes: video.isFolder ? editForm.useSeriesThumbnailForEpisodes : undefined,
     };
     onUpdate?.(video.path, override);
     setIsEditing(false);
   };
+
+  void watchedRevision;
+  const movieWatched = !video.isFolder && isWatched(video, progresses, activeProfileId);
+
+  const toggleMovieWatched = (checked: boolean) => {
+    if (!activeProfileId || video.isFolder) return;
+    setManualWatched(activeProfileId, video.path, checked);
+    onWatchedChange?.();
+  };
+
+  const toggleEpisodeWatched = (ep: LocalFile) => {
+    if (!activeProfileId) return;
+    const w = isWatched(ep, progresses, activeProfileId);
+    setManualWatched(activeProfileId, ep.path, w ? false : true);
+    onWatchedChange?.();
+  };
+
+  const forceSeriesThumbnail = getMediaOverride(video.path)?.useSeriesThumbnailForEpisodes;
 
   useEffect(() => {
     document.body.style.overflow = 'hidden';
@@ -521,6 +602,28 @@ export function DetailModal({
                       Use local info only <span className="text-gray-500">(disable TMDB metadata)</span>
                     </span>
                   </label>
+                  {video.isFolder && (
+                    <label className="flex items-center gap-3 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={editForm.useSeriesThumbnailForEpisodes}
+                        onChange={(e) => setEditForm({ ...editForm, useSeriesThumbnailForEpisodes: e.target.checked })}
+                        className="w-4 h-4 rounded border-gray-600 bg-black/50 accent-accent"
+                      />
+                      <span className="text-sm text-gray-300">Use series thumbnail for all episodes</span>
+                    </label>
+                  )}
+                  {!video.isFolder && activeProfileId && (
+                    <label className="flex items-center gap-3 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={movieWatched}
+                        onChange={(e) => toggleMovieWatched(e.target.checked)}
+                        className="w-4 h-4 rounded border-gray-600 bg-black/50 accent-accent"
+                      />
+                      <span className="text-sm text-gray-300">Mark as watched</span>
+                    </label>
+                  )}
                   <button
                     onClick={handleSaveEdits}
                     className="flex items-center gap-2 bg-accent text-white px-6 py-2 rounded font-bold hover:opacity-90 transition"
@@ -529,7 +632,7 @@ export function DetailModal({
                   </button>
                 </div>
               ) : (
-                <p className="text-gray-200 leading-relaxed text-lg mb-8">
+                <p className="text-gray-200 leading-relaxed text-base mb-8">
                   {(useLocalOnly ? video.meta?.description : (tmdb?.synopsis || video.meta?.description)) || 'No description available for this local file. This file was automatically indexed from your local folders.'}
                 </p>
               )}
@@ -560,6 +663,16 @@ export function DetailModal({
                           seriesTvId={useLocalOnly ? undefined : tmdb?.tvId}
                           episodeMeta={episodeMetaMap[ep.path]}
                           seriesThumbnail={seriesThumbnail}
+                          forceSeriesThumbnail={forceSeriesThumbnail}
+                          progress={
+                            ep.duration && ep.duration > 0
+                              ? (progresses[ep.path] ?? 0) / ep.duration
+                              : undefined
+                          }
+                          watched={isWatched(ep, progresses, activeProfileId)}
+                          watchedIndicatorMode={watchedIndicatorMode}
+                          editMode={isEditing}
+                          onToggleWatched={toggleEpisodeWatched}
                           onPlay={onPlay}
                         />
                       ))}
@@ -660,6 +773,8 @@ export function VideoCard({
   onPlay,
   onInfo,
   progress,
+  watched = false,
+  watchedIndicatorMode = 'always',
   variant = 'carousel',
   enableHoverExpansion = false,
 }: {
@@ -667,6 +782,8 @@ export function VideoCard({
   onPlay: (v: LocalFile) => void;
   onInfo: (v: LocalFile) => void;
   progress?: number;
+  watched?: boolean;
+  watchedIndicatorMode?: Settings['watchedIndicatorMode'];
   variant?: 'carousel' | 'grid';
   enableHoverExpansion?: boolean;
 }) {
@@ -681,6 +798,10 @@ export function VideoCard({
 
   const playTarget = resolvePlayTarget(video);
   const useStaticPreview = video.isFolder && !video.resumeEpisode;
+  const jawletPreviewSrc =
+    useStaticPreview
+      ? ((!useLocalOnly && tmdb?.backdrop) || video.thumbnail || cardImageSrc || undefined)
+      : cardImageSrc;
 
   const handleMouseEnter = () => {
     if (!allowHover) return;
@@ -720,6 +841,13 @@ export function VideoCard({
           </div>
         )}
         <ThumbnailTitle title={getDisplayTitle(video)} imageSrc={cardImageSrc} />
+        {watched && watchedIndicatorMode === 'always' && (
+          <WatchedEyeIndicator
+            imageSrc={cardImageSrc}
+            mode="always"
+            hovered
+          />
+        )}
         {/* Progress Bar */}
         {progress !== undefined && progress > 0 && (
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-600">
@@ -768,6 +896,13 @@ export function VideoCard({
                     const dur = playTarget.duration ?? video.duration;
                     if (dur) v.currentTime = Math.floor(dur / 2);
                   }}
+                />
+              )}
+              {watched && watchedIndicatorMode === 'hover' && (
+                <WatchedEyeIndicator
+                  imageSrc={jawletPreviewSrc}
+                  mode="hover"
+                  hovered
                 />
               )}
               <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 hover:opacity-100 transition">
@@ -868,6 +1003,8 @@ export function ContentRow({
   progresses = {},
   isTop10 = false,
   expandable = false,
+  activeProfileId,
+  watchedIndicatorMode = 'always',
 }: {
   title: string;
   videos: LocalFile[];
@@ -876,6 +1013,8 @@ export function ContentRow({
   progresses?: Record<string, number>;
   isTop10?: boolean;
   expandable?: boolean;
+  activeProfileId?: string | null;
+  watchedIndicatorMode?: Settings['watchedIndicatorMode'];
 }) {
   const rowRef = useRef<HTMLDivElement>(null);
   const [showLeftArrow, setShowLeftArrow] = useState(false);
@@ -907,6 +1046,9 @@ export function ContentRow({
 
   if (videos.length === 0) return null;
 
+  const mediaType: 'movie' | 'tv' | undefined =
+    title === 'Movies' ? 'movie' : title === 'Series' ? 'tv' : undefined;
+
   return (
     <div className="mb-8 relative group z-20 hover:z-50">
       <div
@@ -937,6 +1079,9 @@ export function ContentRow({
           progresses={progresses}
           sortable={expandable}
           showRandomPlay={title === 'Movies'}
+          activeProfileId={activeProfileId}
+          mediaType={mediaType}
+          watchedIndicatorMode={watchedIndicatorMode}
         />
       )}
       
@@ -977,7 +1122,14 @@ export function ContentRow({
                 className={isTop10 ? 'relative z-10 flex-shrink-0' : ''}
                 style={isTop10 ? { marginLeft: top10CardInset(rank) } : undefined}
               >
-                <VideoCard video={video} onPlay={onPlay} onInfo={onInfo} progress={cardProgress(video, progresses)} />
+                <VideoCard
+                  video={video}
+                  onPlay={onPlay}
+                  onInfo={onInfo}
+                  progress={cardProgress(video, progresses)}
+                  watched={getVideoWatched(video, progresses, activeProfileId)}
+                  watchedIndicatorMode={watchedIndicatorMode}
+                />
               </div>
             </div>
           );

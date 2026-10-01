@@ -1,7 +1,12 @@
 import { useState, useEffect } from 'react';
 
-/** Returns whether the bottom strip of an image is light (use dark text) or dark (use light text). */
-export function useImageBrightness(src: string | undefined): 'light' | 'dark' {
+export type BrightnessRegion = 'top' | 'bottom';
+
+/** Returns whether the sampled strip of an image is light (use dark text) or dark (use light text). */
+export function useImageBrightness(
+  src: string | undefined,
+  region: BrightnessRegion = 'bottom',
+): 'light' | 'dark' {
   const [brightness, setBrightness] = useState<'light' | 'dark'>('dark');
 
   useEffect(() => {
@@ -13,7 +18,6 @@ export function useImageBrightness(src: string | undefined): 'light' | 'dark' {
     let cancelled = false;
     const img = new Image();
 
-    // Only set crossOrigin for remote http(s) images, file:// and data: must stay uncorsed
     if (src.startsWith('http://') || src.startsWith('https://')) {
       img.crossOrigin = 'anonymous';
     }
@@ -30,7 +34,7 @@ export function useImageBrightness(src: string | undefined): 'light' | 'dark' {
         canvas.width = sampleW;
         canvas.height = sampleH;
 
-        const srcY = Math.max(0, img.height - sampleH);
+        const srcY = region === 'top' ? 0 : Math.max(0, img.height - sampleH);
         ctx.drawImage(img, 0, srcY, img.width, sampleH, 0, 0, sampleW, sampleH);
 
         const { data } = ctx.getImageData(0, 0, sampleW, sampleH);
@@ -51,8 +55,10 @@ export function useImageBrightness(src: string | undefined): 'light' | 'dark' {
 
     img.src = src;
 
-    return () => { cancelled = true; };
-  }, [src]);
+    return () => {
+      cancelled = true;
+    };
+  }, [src, region]);
 
   return brightness;
 }

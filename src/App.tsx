@@ -36,6 +36,7 @@ import {
 } from './utils/tmdb';
 import { useTMDB } from './hooks/useTMDB';
 import { isTmdbDisabled } from './utils/mediaOverrides';
+import { setManualWatched } from './utils/watched';
 
 export default function App() {
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
@@ -64,7 +65,12 @@ export default function App() {
   filesRef.current = files;
   const [progresses, setProgresses] = useState<Record<string, number>>({});
   const [overrideTick, setOverrideTick] = useState(0);
+  const [watchedTick, setWatchedTick] = useState(0);
   const [tmdbCacheTick, setTmdbCacheTick] = useState(0);
+
+  const handleWatchedChange = useCallback(() => {
+    setWatchedTick((t) => t + 1);
+  }, []);
 
   const getInProgressPaths = (profileId: string | null): Set<string> => {
     if (!profileId) return new Set();
@@ -355,10 +361,14 @@ export default function App() {
     const api = window.electronAPI;
     if (!api?.onPlayerExited) return;
 
-    const offExited = api.onPlayerExited(() => {
+    const offExited = api.onPlayerExited((payload) => {
       setPlayingVideo(null);
       if (activeProfile) {
         setProgresses(JSON.parse(localStorage.getItem(`netflix_progress_${activeProfile}`) || '{}'));
+        if (payload?.duration && payload.duration > 0 && payload.position / payload.duration >= 0.9) {
+          setManualWatched(activeProfile, payload.path, true);
+          setWatchedTick((t) => t + 1);
+        }
       }
     });
 
@@ -531,16 +541,16 @@ export default function App() {
               <div className="flex items-center gap-8" style={{ WebkitAppRegion: 'no-drag' } as any}>
                 <h1 className="text-accent font-black text-2xl tracking-tighter pointer-events-auto shadow-black drop-shadow-md">{settings.appName}</h1>
                 <ul className="hidden md:flex gap-5 text-sm font-semibold text-gray-200 pointer-events-auto">
-                  <li onClick={() => setActiveTab('home')} className={`drop-shadow-md cursor-pointer transition ${activeTab === 'home' ? 'text-white' : 'hover:text-gray-300'}`}>Home</li>
-                  <li onClick={() => setActiveTab('tv')} className={`drop-shadow-md cursor-pointer transition ${activeTab === 'tv' ? 'text-white' : 'hover:text-gray-300'}`}>TV Shows</li>
-                  <li onClick={() => setActiveTab('movies')} className={`drop-shadow-md cursor-pointer transition ${activeTab === 'movies' ? 'text-white' : 'hover:text-gray-300'}`}>Movies</li>
+                  <li onClick={() => { setShowSearch(false); setActiveTab('home'); }} className={`drop-shadow-md cursor-pointer transition ${activeTab === 'home' && !showSearch ? 'text-white' : 'hover:text-gray-300'}`}>Home</li>
+                  <li onClick={() => { setShowSearch(false); setActiveTab('tv'); }} className={`drop-shadow-md cursor-pointer transition ${activeTab === 'tv' && !showSearch ? 'text-white' : 'hover:text-gray-300'}`}>TV Shows</li>
+                  <li onClick={() => { setShowSearch(false); setActiveTab('movies'); }} className={`drop-shadow-md cursor-pointer transition ${activeTab === 'movies' && !showSearch ? 'text-white' : 'hover:text-gray-300'}`}>Movies</li>
                 </ul>
               </div>
             
             <div className="pointer-events-auto flex items-center gap-6 pr-40" style={{ WebkitAppRegion: 'no-drag' } as any}>
               <button
-                onClick={() => setShowSearch(true)}
-                className="flex items-center group relative p-1 hover:bg-white/10 rounded-full transition"
+                onClick={() => setShowSearch((s) => !s)}
+                className={`flex items-center group relative p-1 hover:bg-white/10 rounded-full transition ${showSearch ? 'bg-white/10' : ''}`}
                 aria-label="Search library"
               >
                 <Search className="w-5 h-5 text-white" />
@@ -622,8 +632,8 @@ export default function App() {
         </div>
       ) : (
         <>
-          {/* Hero Banner with Ken Burns */}
-          {featured && (
+          {/* Hero Banner with Ken Burns — hidden while search is open */}
+          {featured && !showSearch && (
             <div className="relative w-full overflow-hidden" style={{ height: `${85 / settings.uiScale}vh` }}>
                   {/* Image and Video Wrapper */}
                   <div className="absolute inset-0 w-full h-full bg-gray-900">
@@ -709,31 +719,31 @@ export default function App() {
             </div>
           )}
 
-          {/* Carousel Rows */}
-          <div className="px-2 -mt-32 relative z-10 flex-grow pb-20">
+          {/* Carousel Rows — hidden while search is open */}
+          <div className={`px-2 relative z-10 flex-grow pb-20 ${showSearch ? 'hidden' : featured ? '-mt-32' : ''}`}>
             {activeTab === 'home' && top10.length > 0 && (
-              <ContentRow title="Top 10 in Your House Today" videos={top10} onPlay={handlePlayVideo} onInfo={setInfoVideo} isTop10={true} />
+              <ContentRow title="Top 10 in Your House Today" videos={top10} onPlay={handlePlayVideo} onInfo={setInfoVideo} isTop10={true} activeProfileId={activeProfile} watchedIndicatorMode={settings.watchedIndicatorMode} />
             )}
             {activeTab === 'home' && continueWatchingAll.length > 0 && (
-              <ContentRow title="Continue Watching" videos={continueWatchingAll} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} />
+              <ContentRow title="Continue Watching" videos={continueWatchingAll} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} activeProfileId={activeProfile} watchedIndicatorMode={settings.watchedIndicatorMode} />
             )}
             {activeTab === 'tv' && continueWatchingTv.length > 0 && (
-              <ContentRow title="Continue Watching" videos={continueWatchingTv} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} />
+              <ContentRow title="Continue Watching" videos={continueWatchingTv} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} activeProfileId={activeProfile} watchedIndicatorMode={settings.watchedIndicatorMode} />
             )}
             {(activeTab === 'home' || activeTab === 'movies') && continueWatchingMovies.length > 0 && (
-              <ContentRow title="Continue Watching" videos={continueWatchingMovies} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} />
+              <ContentRow title="Continue Watching" videos={continueWatchingMovies} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} activeProfileId={activeProfile} watchedIndicatorMode={settings.watchedIndicatorMode} />
             )}
             
             {activeTab === 'home' && heroCatalog.length > 0 && (
-              <ContentRow title="Home" videos={heroCatalog} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable />
+              <ContentRow title="Home" videos={heroCatalog} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable activeProfileId={activeProfile} watchedIndicatorMode={settings.watchedIndicatorMode} />
             )}
             
             {(activeTab === 'home' || activeTab === 'tv') && folders.length > 0 && (
-              <ContentRow title="Series" videos={folders} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable />
+              <ContentRow title="Series" videos={folders} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable activeProfileId={activeProfile} watchedIndicatorMode={settings.watchedIndicatorMode} />
             )}
             
             {(activeTab === 'home' || activeTab === 'movies') && movies.length > 0 && (
-              <ContentRow title="Movies" videos={movies} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable />
+              <ContentRow title="Movies" videos={movies} onPlay={handlePlayVideo} onInfo={setInfoVideo} progresses={progresses} expandable activeProfileId={activeProfile} watchedIndicatorMode={settings.watchedIndicatorMode} />
             )}
 
             {activeTab === 'movies' && movieGenreRows.map((row) => (
@@ -745,6 +755,8 @@ export default function App() {
                 onInfo={setInfoVideo}
                 progresses={progresses}
                 expandable
+                activeProfileId={activeProfile}
+                watchedIndicatorMode={settings.watchedIndicatorMode}
               />
             ))}
 
@@ -757,6 +769,8 @@ export default function App() {
                 onInfo={setInfoVideo}
                 progresses={progresses}
                 expandable
+                activeProfileId={activeProfile}
+                watchedIndicatorMode={settings.watchedIndicatorMode}
               />
             ))}
           </div>
@@ -766,11 +780,17 @@ export default function App() {
       {/* Detail Modal */}
       {infoVideo && (
         <DetailModal
+          key={infoVideo.path}
           video={infoVideo}
+          watchedRevision={watchedTick}
           onClose={() => setInfoVideo(null)}
           onPlay={(v) => { setInfoVideo(null); handlePlayVideo(v); }}
           onUpdate={handleUpdateVideo}
           onEpisodeEnriched={handleEpisodeEnriched}
+          progresses={progresses}
+          activeProfileId={activeProfile}
+          onWatchedChange={handleWatchedChange}
+          watchedIndicatorMode={settings.watchedIndicatorMode}
         />
       )}
 
@@ -795,6 +815,9 @@ export default function App() {
           onClose={() => setShowSearch(false)}
           onPlay={handlePlayVideo}
           onInfo={setInfoVideo}
+          progresses={progresses}
+          activeProfileId={activeProfile}
+          watchedIndicatorMode={settings.watchedIndicatorMode}
         />
       )}
 

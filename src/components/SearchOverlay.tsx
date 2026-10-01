@@ -1,17 +1,28 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, X, Play } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { LocalFile } from './NetflixUI';
-import { resolvePlayTarget } from '../utils/grouping';
+import { VideoCard, getVideoWatched, type LocalFile } from './NetflixUI';
+import { cardProgress } from '../utils/grouping';
+import type { Settings } from './SettingsModal';
+import { SearchFilterSidebar } from './SearchFilterSidebar';
+import {
+  applyCatalogFilters,
+  collectGenres,
+  getItemSearchGenres,
+  DEFAULT_CATALOG_FILTERS,
+  type CatalogFilters,
+} from '../utils/catalogFilters';
 
 function getSearchText(file: LocalFile): string {
   const episodeText = file.folderFiles
     ? file.folderFiles.flatMap((ep) => [ep.name, ep.meta?.title, ep.relativePath]).filter(Boolean).join(' ')
     : '';
+  const genreText = getItemSearchGenres(file).join(' ');
   return [
     file.meta?.title,
     file.name,
     file.meta?.genre,
+    genreText,
     file.meta?.description,
     file.meta?.year,
     file.folderName,
@@ -25,33 +36,41 @@ export function SearchOverlay({
   onClose,
   onPlay,
   onInfo,
+  progresses = {},
+  activeProfileId,
+  watchedIndicatorMode = 'always',
 }: {
   files: LocalFile[];
   onClose: () => void;
   onInfo: (v: LocalFile) => void;
   onPlay: (v: LocalFile) => void;
+  progresses?: Record<string, number>;
+  activeProfileId?: string | null;
+  watchedIndicatorMode?: Settings['watchedIndicatorMode'];
 }) {
   const [query, setQuery] = useState('');
+  const [filters, setFilters] = useState<CatalogFilters>(DEFAULT_CATALOG_FILTERS);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
-    document.body.style.overflow = 'hidden';
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => {
-      document.body.style.overflow = 'auto';
       window.removeEventListener('keydown', onKey);
     };
   }, [onClose]);
 
+  const availableGenres = useMemo(() => collectGenres(files), [files]);
+
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return files.slice(0, 40);
-    return files.filter(f => getSearchText(f).includes(q)).slice(0, 60);
-  }, [files, query]);
+    let list = q ? files.filter((f) => getSearchText(f).includes(q)) : files;
+    list = applyCatalogFilters(list, filters, progresses, activeProfileId);
+    return list;
+  }, [files, query, filters, progresses, activeProfileId]);
 
   return (
     <AnimatePresence>
@@ -59,78 +78,93 @@ export function SearchOverlay({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[450] bg-[#141414]/98 flex flex-col pt-24"
+        transition={{ duration: 0.25, ease: 'easeOut' }}
+        className="fixed top-20 left-0 right-0 bottom-0 z-40 bg-[#141414] flex flex-col"
       >
-        <div className="px-10 pb-6">
-          <div className="flex items-center gap-4 max-w-3xl">
-            <Search className="w-6 h-6 text-white flex-shrink-0" />
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search titles, genres, folders..."
-              className="flex-1 bg-transparent text-white text-xl outline-none placeholder:text-gray-500 border-b border-gray-600 focus:border-white pb-2 transition"
-            />
-            <button onClick={onClose} className="p-2 text-gray-400 hover:text-white transition">
-              <X className="w-6 h-6" />
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
+          transition={{ duration: 0.3, ease: [0.25, 0.1, 0.25, 1] }}
+          className="flex flex-col flex-1 min-h-0"
+        >
+          {/* Search bar below header */}
+          <div className="flex items-center justify-end px-6 md:px-10 py-4 shrink-0 border-b border-gray-800/50">
+            <div className="flex items-center gap-2 bg-[#181818] border border-gray-700 rounded-full px-4 py-2 w-full max-w-md">
+              <Search className="w-4 h-4 text-gray-400 flex-shrink-0" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search titles, genres..."
+                className="flex-1 bg-transparent text-white text-sm outline-none placeholder:text-gray-500 min-w-0"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  className="p-0.5 text-gray-400 hover:text-white transition flex-shrink-0"
+                  aria-label="Clear search"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="ml-3 p-2 text-gray-400 hover:text-white transition flex-shrink-0"
+              aria-label="Close search"
+            >
+              <X className="w-5 h-5" />
             </button>
           </div>
-        </div>
 
-        <div className="flex-1 overflow-y-auto px-10 pb-10">
-          {results.length === 0 ? (
-            <p className="text-gray-500 text-lg mt-8">No results for &ldquo;{query}&rdquo;</p>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {results.map((file) => (
-                <button
-                  key={file.path}
-                  onClick={() => {
-                    onClose();
-                    onInfo(file);
-                  }}
-                  className="flex items-center gap-4 bg-[#181818] hover:bg-[#242424] rounded-lg p-3 text-left transition group"
-                >
-                  <div className="w-28 aspect-video rounded overflow-hidden bg-gray-800 flex-shrink-0 relative">
-                    {(file.thumbnail || file.localFanart || file.localPoster) ? (
-                      <img src={file.thumbnail || file.localFanart || file.localPoster || ''} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-xs text-gray-500 p-2 text-center">
-                        {file.meta?.title || file.name}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white font-semibold truncate group-hover:text-accent transition">
-                      {file.meta?.title || file.name}
-                    </p>
-                    {file.isFolder && (
-                      <p className="text-gray-500 text-sm truncate">Series · {file.folderFiles?.length ?? 0} episodes</p>
-                    )}
-                    {file.meta?.genre && (
-                      <p className="text-gray-500 text-sm truncate">{file.meta.genre}</p>
-                    )}
-                    {file.meta?.year && (
-                      <p className="text-gray-600 text-xs mt-0.5">{file.meta.year}</p>
-                    )}
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onClose();
-                      onPlay(resolvePlayTarget(file));
-                    }}
-                    className="p-2 rounded-full bg-white/10 hover:bg-white text-white hover:text-black transition flex-shrink-0 opacity-0 group-hover:opacity-100"
-                    aria-label="Play"
-                  >
-                    <Play className="w-4 h-4 fill-current" />
-                  </button>
-                </button>
-              ))}
+          {/* Main: sidebar + grid */}
+          <div className="flex flex-1 min-h-0">
+            <SearchFilterSidebar filters={filters} onChange={setFilters} genres={availableGenres} />
+
+            <div className="flex-1 overflow-y-auto overflow-x-hidden px-6 md:px-10 pb-10 pt-4">
+              {results.length === 0 ? (
+                <p className="text-gray-500 text-lg mt-8">
+                  {query ? `No results for "${query}"` : 'No titles match your filters'}
+                </p>
+              ) : (
+                <>
+                <p className="text-sm text-gray-400 font-medium pt-12 pb-1 tracking-wide">
+                  {query.trim() ? (
+                    <>
+                      <span className="text-gray-300">{results.length}</span>
+                      {' '}result{results.length !== 1 ? 's' : ''} for &ldquo;{query.trim()}&rdquo;
+                    </>
+                  ) : (
+                    <>
+                      Showing <span className="text-gray-300">{results.length}</span>
+                      {' '}title{results.length !== 1 ? 's' : ''}
+                    </>
+                  )}
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8 pt-4 pb-4">
+                  {results.map((video, i) => (
+                    <div key={`${video.path}-${i}`} className="relative hover:z-[600]">
+                      <VideoCard
+                        video={video}
+                        onPlay={(v) => { onClose(); onPlay(v); }}
+                        onInfo={(v) => { onClose(); onInfo(v); }}
+                        variant="grid"
+                        enableHoverExpansion
+                        progress={cardProgress(video, progresses)}
+                        watched={getVideoWatched(video, progresses, activeProfileId)}
+                        watchedIndicatorMode={watchedIndicatorMode}
+                      />
+                    </div>
+                  ))}
+                </div>
+                </>
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        </motion.div>
       </motion.div>
     </AnimatePresence>
   );
